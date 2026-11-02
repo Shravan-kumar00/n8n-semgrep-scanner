@@ -3,6 +3,7 @@
 #
 # Conventions used by the scanner backend (app/scanner.py):
 #   metadata.title        Short human-readable title shown in the UI
+#   metadata.brief        One plain-English sentence for reports (PDF)
 #   metadata.risk         critical | high | medium | low | info  (UI severity)
 #   metadata.category     secrets | transport | injection | code-execution |
 #                         access-control | data-exposure
@@ -30,15 +31,19 @@ rules:
       exposed to anyone who can read the workflow.
     patterns:
       - pattern: '"$KEY": "$VALUE"'
+      # Any key *containing* a secret word (dbPassword, smtp_pass, x_api_key,
+      # clientSecret, ...), except n8n option names that only describe auth
+      # (authentication, tokenType, accessTokenUrl, secretName, ...).
       - metavariable-regex:
           metavariable: $KEY
-          regex: (?i)^"?(password|passwd|pwd|pass|secret|client_?secret|secret_?key|api_?key|apikey|access_?key|access_?token|auth_?token|refresh_?token|bearer_?token|token|private_?key|signing_?secret|webhook_?secret)"?$
-      # Non-empty literal (not an "=" expression), at least 6 chars.
+          regex: (?i)^"?(?!(authentication|author)"?$)(?![\w.-]*(url|uri|type|mode|field|name|header|path|location|id|endpoint|expires|expiry|length|count|enabled|required|format|method|hint|policy)"?$)([\w.-]*(password|passwd|pwd|passphrase|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential)[\w.-]*|([\w.-]*[_.-])?pass|auth[_-]?(key|token|code|string))"?$
+      # Literal of 4+ chars: not an "=" expression and not a placeholder.
       - metavariable-regex:
           metavariable: $VALUE
-          regex: ^"?[^="\s{][^"]{5,}"?$
+          regex: (?i)^"?(?!=)(?!(your[_-]|<|\$\{|\{\{|x{3,}"?$|\*{3,}|placeholder|redacted|null"?$|none"?$|true"?$|false"?$))[^"\s][^"]{3,}"?$
     metadata:
       title: Hardcoded secret in node parameter
+      brief: "A password, token or API key is written directly into a node setting."
       risk: high
       category: secrets
       cwe: "CWE-798: Use of Hard-coded Credentials"
@@ -58,14 +63,17 @@ rules:
       text inside the workflow.
     patterns:
       - pattern: '{..., "name": "$NAME", "value": "$VALUE", ...}'
+      # Header / field names containing a secret word: Authorization,
+      # X-Shopify-Access-Token, adminPassword, Cookie, ...
       - metavariable-regex:
           metavariable: $NAME
-          regex: (?i)^"?(authorization|proxy-authorization|x-api-key|api[-_]?key|apikey|x-auth-token|x-access-token|access[-_]?token|auth[-_]?token|token|password|passwd|secret|client[-_]?secret|private[-_]?key|cookie)"?$
+          regex: (?i)^"?(?![\w.-]*(url|uri|type|mode|name|id|length|hint)"?$)[\w.-]*(authorization|api[-_]?key|apikey|token|password|passwd|pwd|passphrase|secret|private[-_]?key|cookie|credential)[\w.-]*"?$
       - metavariable-regex:
           metavariable: $VALUE
-          regex: ^"?[^="\s{][^"]{5,}"?$
+          regex: (?i)^"?(?!=)(?!(your[_-]|<|\$\{|\{\{|x{3,}"?$|\*{3,}|placeholder|redacted|null"?$|none"?$))[^"\s][^"]{3,}"?$
     metadata:
       title: Hardcoded credential in header / field
+      brief: "A header or form field contains a hardcoded credential."
       risk: high
       category: secrets
       cwe: "CWE-798: Use of Hard-coded Credentials"
@@ -94,6 +102,7 @@ rules:
       - pattern-regex: -----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----
     metadata:
       title: Provider secret / private key embedded in workflow
+      brief: "A real provider key or token (for example AWS, GitHub or OpenAI) is stored in the workflow."
       risk: critical
       category: secrets
       cwe: "CWE-798: Use of Hard-coded Credentials"
@@ -107,18 +116,69 @@ rules:
     languages: [json]
     severity: ERROR
     message: >-
-      A URL embeds a username and password (scheme://user:pass@host). The
-      credentials are stored in clear text and are often written to logs.
-    pattern-regex: \b[a-z][a-z0-9+.-]*://[^/\s:@"]+:[^/\s@"]+@[^\s"]+
+      A URL carries credentials, either as user:password@host or as a secret
+      query parameter (?password=, ?api_key=, ?token=). URLs are stored in
+      clear text and routinely written to proxy and server logs.
+    pattern-either:
+      - pattern-regex: \b[a-z][a-z0-9+.-]*://[^/\s:@"]+:[^/\s@"]+@[^\s"]+
+      - pattern-regex: (?i)[?&](password|passwd|pwd|pass|secret|client_secret|api[_-]?key|apikey|token|access_token|auth_token|key)=(?![{$<]|%7B)[^&"\s#\\]{4,}
     metadata:
       title: Credentials embedded in URL
+      brief: "A URL contains a username and password or a secret key."
       risk: high
       category: secrets
       cwe: "CWE-522: Insufficiently Protected Credentials"
       owasp: "A07:2021 - Identification and Authentication Failures"
       remediation: >-
-        Remove user:password from the URL and configure Basic Auth (or the
-        database/service credential type) through n8n Credentials.
+        Remove the credentials from the URL. Configure Basic Auth, Query Auth
+        or the database/service credential type through n8n Credentials so the
+        value is stored encrypted, and rotate the exposed secret.
+
+  - id: n8n-hardcoded-secret-in-code-or-body
+    languages: [json]
+    severity: ERROR
+    message: >-
+      A password, token or API key is hardcoded inside a Code node, a raw
+      JSON/text body or a connection string. Embedded secrets are easy to miss
+      in review and travel with every copy of the workflow.
+    pattern-either:
+      # JS/Python assignment or object literal: password = 'x', apiKey: "x",
+      # and escaped JSON inside a string: \"password\": \"x\"
+      - pattern-regex: (?i)\b[\w-]*(password|passwd|pwd|passphrase|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|token)(\\")?\s*[:=]\s*(\\"|'|`)(?![=$<{])(?!(your[_-]|xxx|\*\*\*))[^"'`\\\s]{4,}(\\"|'|`)
+      # ADO/JDBC-style connection string: ...;Password=secret;
+      - pattern-regex: (?i)(?<![\w-])(password|pwd)\s*=\s*(?![{$<'"\\])[^;"'\\\s]{3,}\s*;
+    metadata:
+      title: Hardcoded secret in code, body or connection string
+      brief: "A password or key is hardcoded inside code, a request body or a connection string."
+      risk: high
+      category: secrets
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: >-
+        Remove the literal from the code/body. Use an n8n Credential on the
+        node, or reference {{ $env.MY_SECRET }} / $env in the expression, and
+        rotate the exposed value.
+
+  - id: n8n-literal-authorization-token
+    languages: [json]
+    severity: ERROR
+    message: >-
+      A literal Bearer/Basic authorization value appears in the workflow. A
+      Basic value is only base64 of user:password, so it is a plain-text
+      password.
+    # Token must look random: contain a digit or a lower->UPPER case change,
+    # so prose such as "Basic Authentication" is not reported.
+    pattern-regex: \b([Bb]earer|[Bb]asic|BEARER|BASIC)\s+(?=[A-Za-z0-9._~+/-]*(\d|[a-z][A-Za-z0-9._~+/-]*[A-Z]))[A-Za-z0-9._~+/-]{12,}=*
+    metadata:
+      title: Hardcoded Bearer / Basic authorization value
+      brief: "A Bearer or Basic login token is hardcoded in the workflow."
+      risk: high
+      category: secrets
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: >-
+        Configure Header Auth / Basic Auth / Bearer credentials on the node
+        instead of writing the header value, and rotate the token or password.
 
   # ---------------------------------------------------------------------------
   # TRANSPORT SECURITY
@@ -138,6 +198,7 @@ rules:
       - pattern: '"ssl": "disable"'
     metadata:
       title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
       risk: high
       category: transport
       cwe: "CWE-295: Improper Certificate Validation"
@@ -160,6 +221,7 @@ rules:
           regex: ^"?=?\s*http://(?!(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)(:\d+)?([/"]|$))
     metadata:
       title: Clear-text HTTP endpoint
+      brief: "Data is sent over unencrypted http:// instead of https://."
       risk: medium
       category: transport
       cwe: "CWE-319: Cleartext Transmission of Sensitive Information"
@@ -188,6 +250,7 @@ rules:
           regex: (?s).*\{\{.*\}\}
     metadata:
       title: Command injection via expression in shell node
+      brief: "Outside data is inserted into a shell command, letting an attacker run commands on the server."
       risk: critical
       category: injection
       cwe: "CWE-78: OS Command Injection"
@@ -207,6 +270,7 @@ rules:
     pattern: '"type": "n8n-nodes-base.executeCommand"'
     metadata:
       title: Execute Command node in use
+      brief: "The workflow runs shell commands on the n8n server."
       risk: medium
       category: code-execution
       cwe: "CWE-78: OS Command Injection"
@@ -233,6 +297,7 @@ rules:
           regex: (?s).*(child_process|\beval\s*\(|new\s+Function\s*\(|require\s*\(\W*(fs|child_process|net|vm|os|http|https|dgram|worker_threads)\b|process\.env|\bexecSync\s*\(|\bspawn(Sync)?\s*\(|\bsubprocess\b|os\.system|__import__|\bexec\s*\()
     metadata:
       title: Risky API in Code / Function node
+      brief: "Custom code uses risky functions such as eval, child processes or environment variables."
       risk: high
       category: code-execution
       cwe: "CWE-95: Eval Injection"
@@ -242,26 +307,6 @@ rules:
         NODE_FUNCTION_ALLOW_BUILTIN / NODE_FUNCTION_ALLOW_EXTERNAL restricted
         (unset or an explicit allow-list), use N8N_BLOCK_ENV_ACCESS_IN_NODE=true,
         and pass configuration through credentials rather than process.env.
-
-  - id: n8n-code-node-present
-    languages: [json]
-    severity: INFO
-    message: >-
-      Custom code node ($TYPE) found. Custom code bypasses the safety of
-      built-in nodes and should be reviewed.
-    patterns:
-      - pattern: '"type": "$TYPE"'
-      - metavariable-regex:
-          metavariable: $TYPE
-          regex: ^"?n8n-nodes-base\.(code|function|functionItem)"?$
-    metadata:
-      title: Custom code node requires review
-      risk: info
-      category: code-execution
-      cwe: "CWE-94: Improper Control of Generation of Code"
-      remediation: >-
-        Review the code for unsafe handling of external input and keep the
-        logic minimal. Prefer built-in nodes where possible.
 
   - id: n8n-sql-injection-via-expression
     languages: [json]
@@ -276,6 +321,7 @@ rules:
           regex: (?is).*\b(select|insert|update|delete|merge|drop|alter|create|exec|call|with)\b.*\{\{.*\}\}
     metadata:
       title: SQL injection via expression
+      brief: "Outside data is inserted into a SQL query, letting an attacker read or change the database."
       risk: high
       category: injection
       cwe: "CWE-89: SQL Injection"
@@ -307,6 +353,7 @@ rules:
           - pattern: '"authentication": "none"'
     metadata:
       title: Webhook / form trigger without authentication
+      brief: "This webhook or form can be called by anyone without logging in."
       risk: medium
       category: access-control
       cwe: "CWE-306: Missing Authentication for Critical Function"
@@ -325,6 +372,7 @@ rules:
     pattern: '"allowedOrigins": "*"'
     metadata:
       title: Webhook allows any CORS origin
+      brief: "Any website can call this webhook from a visitor's browser."
       risk: medium
       category: access-control
       cwe: "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
@@ -343,9 +391,363 @@ rules:
     pattern: '"pinData": {..., "$NODE": $DATA, ...}'
     metadata:
       title: Pinned execution data included in export
+      brief: "Real sample data is saved inside the workflow export."
       risk: low
       category: data-exposure
       cwe: "CWE-200: Exposure of Sensitive Information"
       remediation: >-
         Unpin the data (or delete the "pinData" block) before sharing or
         committing the workflow.
+
+  # ---------------------------------------------------------------------------
+  # AI AGENTS  (OWASP Top 10 for LLM Applications 2025)
+  # Workflow-wide AI checks that need the connection graph (prompt injection
+  # -> data exfiltration, agent replies leaking private data) live in
+  # app/graph.py; the rules below cover single-node misconfigurations.
+  # ---------------------------------------------------------------------------
+  - id: n8n-ai-tool-model-controlled-url
+    languages: [json]
+    severity: ERROR
+    message: >-
+      The AI model chooses the URL this HTTP tool calls. A prompt-injected
+      agent can send any data it has seen to an attacker's server
+      (e.g. https://evil.example/?d=<mailbox contents>) or reach internal
+      services (SSRF).
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?(@n8n/n8n-nodes-langchain\.toolHttpRequest|n8n-nodes-base\.httpRequestTool)"?$
+      - pattern: '"url": "$URL"'
+      # Host part comes from $fromAI(...) or a {placeholder}.
+      - metavariable-regex:
+          metavariable: $URL
+          regex: ^"?=?\s*(https?://)?(\{[^{]|\{\{\s*\$fromAI)
+    metadata:
+      title: AI tool can call any URL the model chooses
+      brief: "The AI chooses which URL to call, so it can be tricked into sending data anywhere."
+      risk: high
+      category: ai-agent
+      cwe: "CWE-918: Server-Side Request Forgery"
+      owasp: "LLM06:2025 Excessive Agency"
+      remediation: >-
+        Hardcode the scheme and host (e.g. https://api.example.com/...) and let
+        the model fill only specific path or query values. If several hosts
+        are needed, create one tool per host.
+
+  - id: n8n-ai-tool-model-chosen-recipient
+    languages: [json]
+    severity: ERROR
+    message: >-
+      The AI model decides $KEY for this $TYPE action. Through prompt
+      injection (a crafted email, chat message or document) an attacker can
+      make the agent send internal data to an address or channel they control.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?n8n-nodes-base\.(microsoftOutlook|microsoftTeams|mondayCom|gmail|emailSend|slack|telegram|whatsApp|discord|microsoftOneDrive|microsoftSharePoint|googleDrive|mattermost)Tool"?$
+      - pattern: '"$KEY": "$VALUE"'
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^"?(toRecipients|ccRecipients|bccRecipients|to|cc|bcc|sendTo|toEmail|recipient|recipients|email|emailAddress|chatId|channelId|teamId|boardId|groupId|userId|user|webhookUri|shareWith)"?$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: (?s).*\$fromAI
+    metadata:
+      title: AI decides who receives data
+      brief: "The AI decides who receives emails or messages, so data can be sent to an attacker."
+      risk: high
+      category: ai-agent
+      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
+      owasp: "LLM06:2025 Excessive Agency"
+      remediation: >-
+        Fix the recipient / channel / board in the tool configuration, or
+        restrict it with an allow-list check (e.g. only @yourcompany.com) in a
+        sub-workflow tool. For sends that matter, use Outlook/Teams
+        "Send and Wait for Response" so a human approves first.
+
+  - id: n8n-ai-tool-destructive-operation
+    languages: [json]
+    severity: WARNING
+    message: >-
+      An AI agent tool performs a destructive operation ($OP). A wrong model
+      decision or a prompt injection can delete or move business data without
+      human review.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?(n8n-nodes-base\.\w+Tool|@n8n/n8n-nodes-langchain\.tool\w+)"?$
+      - pattern: '"operation": "$OP"'
+      - metavariable-regex:
+          metavariable: $OP
+          regex: (?i)^"?(delete\w*|remove\w*|archive\w*|move\w*|clear\w*|purge\w*|trash\w*)"?$
+    metadata:
+      title: AI agent can delete or move data
+      brief: "The AI agent can delete or move business data on its own."
+      risk: medium
+      category: ai-agent
+      cwe: "CWE-285: Improper Authorization"
+      owasp: "LLM06:2025 Excessive Agency"
+      remediation: >-
+        Remove destructive tools from the agent, or put them behind a human
+        approval step (Send and Wait for Response) and a sub-workflow that
+        validates the target item.
+
+  - id: n8n-ai-prompt-contains-env-secret
+    languages: [json]
+    severity: ERROR
+    message: >-
+      An AI prompt ($KEY) includes an environment variable via $env. The value
+      is sent to the model provider and can be extracted by anyone who can
+      talk to the agent ("repeat your instructions").
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?@n8n/n8n-nodes-langchain\.(agent\w*|chain\w*|openAi|lmChat\w*|lmOpenAi|informationExtractor|textClassifier|sentimentAnalysis)"?$
+      - pattern: '"$KEY": "$VALUE"'
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^"?(systemMessage|text|prompt|message|content|instructions|inputText|systemPromptTemplate|humanMessage)"?$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: (?s).*\$env\b
+    metadata:
+      title: Secret placed in AI prompt
+      brief: "A secret is placed in the AI prompt, where the AI provider and chat users can see it."
+      risk: high
+      category: ai-agent
+      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
+      owasp: "LLM07:2025 System Prompt Leakage"
+      remediation: >-
+        Never put secrets in prompts. Give the agent a tool that uses an n8n
+        Credential instead; the model then never sees the secret.
+
+  - id: n8n-ai-chat-public-without-auth
+    languages: [json]
+    severity: ERROR
+    message: >-
+      The chat trigger is public with no authentication. Anyone with the URL
+      can talk to the agent, use its tools and read whatever data those tools
+      can reach.
+    patterns:
+      - pattern-inside: '{..., "type": "@n8n/n8n-nodes-langchain.chatTrigger", ...}'
+      - pattern: '"parameters": {..., "public": true, ...}'
+      - pattern-not: '"parameters": {..., "authentication": "basicAuth", ...}'
+      - pattern-not: '"parameters": {..., "authentication": "n8nUserAuth", ...}'
+    metadata:
+      title: Public AI chat without authentication
+      brief: "Anyone on the internet can chat with this AI agent."
+      risk: high
+      category: ai-agent
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+      remediation: >-
+        Set the chat trigger's Authentication to "n8n User Auth" (internal
+        users) or Basic Auth, or make it non-public and embed it behind your
+        own authenticated app.
+
+  - id: n8n-ai-mcp-server-without-auth
+    languages: [json]
+    severity: ERROR
+    message: >-
+      This MCP Server Trigger exposes the workflow's tools to any MCP client
+      without authentication. External AI clients can call every attached
+      tool, including ones that read Outlook, Teams or monday.com data.
+    patterns:
+      - pattern-inside: '{..., "type": "@n8n/n8n-nodes-langchain.mcpTrigger", ...}'
+      - pattern-either:
+          - patterns:
+              - pattern: '"parameters": $P'
+              - pattern-not: '"parameters": {..., "authentication": $A, ...}'
+          - pattern: '"authentication": "none"'
+    metadata:
+      title: MCP server exposes tools without authentication
+      brief: "Any AI client can use this workflow's tools without logging in."
+      risk: high
+      category: ai-agent
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      owasp: "LLM06:2025 Excessive Agency"
+      remediation: Set Authentication to Bearer or Header Auth on the MCP Server Trigger.
+
+  - id: n8n-ai-shared-conversation-memory
+    languages: [json]
+    severity: ERROR
+    message: >-
+      Chat memory uses the fixed session key "$KEY", so every user shares one
+      conversation history. One user can ask the agent what earlier users
+      said or what data it fetched for them.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?@n8n/n8n-nodes-langchain\.memory\w+"?$
+      - pattern: '"sessionKey": "$KEY"'
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: ^"?[^="\s]
+    metadata:
+      title: AI memory shared between users
+      brief: "All users share one chat history, so one user can see another user's conversation."
+      risk: high
+      category: ai-agent
+      cwe: "CWE-488: Exposure of Data Element to Wrong Session"
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+      remediation: >-
+        Use a per-user / per-conversation key, e.g. {{ $json.sessionId }} from
+        the chat trigger or the Teams chat id, so histories stay separate.
+
+  - id: n8n-ai-intermediate-steps-exposed
+    languages: [json]
+    severity: INFO
+    message: >-
+      The agent returns its intermediate steps. Raw tool inputs and outputs
+      (e.g. full email bodies or board rows) are included in the response.
+    pattern: '"returnIntermediateSteps": true'
+    metadata:
+      title: Agent returns raw tool outputs
+      brief: "The agent's raw tool results (such as full emails) are returned with its answer."
+      risk: low
+      category: ai-agent
+      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+      remediation: >-
+        Turn off "Return Intermediate Steps" unless you need it for debugging,
+        and never return it to end users.
+
+  # ---------------------------------------------------------------------------
+  # MICROSOFT OUTLOOK / TEAMS / MONDAY.COM
+  # ---------------------------------------------------------------------------
+  - id: n8n-teams-webhook-url-exposed
+    languages: [json]
+    severity: ERROR
+    message: >-
+      A Microsoft Teams incoming-webhook / Power Automate workflow URL is
+      stored in the workflow. The URL itself is the credential: anyone who has
+      it can post messages (including phishing links) into the channel.
+    pattern-either:
+      - pattern-regex: https://[A-Za-z0-9-]+\.webhook\.office\.com/webhookb2/[^\s"]+
+      - pattern-regex: https://[^\s"/]*\.logic\.azure\.com[^\s"]*[?&]sig=[^\s"&]+
+      - pattern-regex: https://[^\s"/]*\.powerplatform\.com[^\s"]*[?&]sig=[^\s"&]+
+    metadata:
+      title: Teams webhook URL exposed
+      brief: "A Teams webhook URL, which works like a password, is stored in the workflow."
+      risk: high
+      category: secrets
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: >-
+        Store the URL in an environment variable ({{ $env.TEAMS_WEBHOOK_URL }})
+        or use the Microsoft Teams node with an OAuth2 credential. Regenerate
+        the webhook in Teams since this URL has been exposed.
+
+  - id: n8n-email-hidden-bcc
+    languages: [json]
+    severity: WARNING
+    message: >-
+      Outgoing email is silently copied (BCC) to "$VALUE". A hidden recipient
+      is a common way to leak mail out of the organisation unnoticed.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?n8n-nodes-base\.(microsoftOutlook|gmail|emailSend)(Tool)?"?$
+      - pattern: '"$KEY": "$VALUE"'
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^"?(bccRecipients|bcc|bccList|bccEmail)"?$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^"?[^"\s]
+    metadata:
+      title: Hidden BCC recipient on outgoing email
+      brief: "Outgoing emails are secretly copied to another address."
+      risk: medium
+      category: integrations
+      cwe: "CWE-359: Exposure of Private Personal Information to an Unauthorized Actor"
+      remediation: >-
+        Remove the BCC unless it is an approved internal archive address. Use
+        Microsoft 365 journaling or retention policies for archiving instead.
+
+  - id: n8n-email-recipient-from-request
+    languages: [json]
+    severity: WARNING
+    message: >-
+      The email recipient ($KEY) comes from webhook / form input. Whoever
+      calls the endpoint decides where this email, and any data in it, is
+      sent.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?n8n-nodes-base\.(microsoftOutlook|gmail|emailSend)"?$
+      - pattern: '"$KEY": "$VALUE"'
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^"?(toRecipients|ccRecipients|to|cc|sendTo|toEmail)"?$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: (?s).*(\$json\.(body|query|headers)\b|\$\(\s*'[^']*(Webhook|Form|Trigger)[^']*'\s*\))
+    metadata:
+      title: Email recipient controlled by request data
+      brief: "Whoever calls the webhook decides who the email is sent to."
+      risk: medium
+      category: integrations
+      cwe: "CWE-441: Unintended Proxy or Intermediary"
+      remediation: >-
+        Only send to addresses you have verified (e.g. look the user up in your
+        directory first), never include internal data in mail sent to a
+        caller-supplied address, and add rate limiting.
+
+  - id: n8n-bulk-record-forwarded
+    languages: [json]
+    severity: WARNING
+    message: >-
+      $KEY sends the entire item ($json / all items) to $TYPE. Every field
+      from earlier steps, including personal data, email content or tokens,
+      is posted to the destination.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?n8n-nodes-base\.(microsoftOutlook|microsoftTeams|mondayCom|gmail|emailSend|slack|telegram|whatsApp|discord|mattermost|googleChat|httpRequest)(Tool)?"?$
+      - pattern: '"$KEY": "$VALUE"'
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: (?s).*(JSON\.stringify\(\s*\$(json|input|items|node|\()|\{\{\s*\$json\s*\}\}|\$input\.all\(\)|\.all\(\)\s*\}\})
+    metadata:
+      title: Entire record forwarded to external service
+      brief: "Entire records, with every field, are sent to another service."
+      risk: medium
+      category: integrations
+      cwe: "CWE-212: Improper Removal of Sensitive Information Before Storage or Transfer"
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+      remediation: >-
+        Send only the fields the recipient needs (e.g. {{ $json.ticketId }},
+        {{ $json.summary }}). Add an Edit Fields (Set) node with "Keep only set
+        fields" before the send.
+
+  - id: n8n-bulk-read-internal-data
+    languages: [json]
+    severity: INFO
+    message: >-
+      $TYPE reads all records (returnAll = true). Large mailbox / board reads
+      increase what can leak if this data flows to an AI model, a webhook
+      response or an external service.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?n8n-nodes-base\.(microsoftOutlook|microsoftTeams|mondayCom|gmail|microsoftOneDrive|microsoftSharePoint)(Tool)?"?$
+      - pattern: '"returnAll": true'
+    metadata:
+      title: Bulk read of mailbox / board data
+      brief: "The workflow reads every email or board item instead of only what it needs."
+      risk: low
+      category: integrations
+      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
+      remediation: >-
+        Set a Limit and filters (folder, sender, date, board group) so only
+        the records the workflow needs are read.

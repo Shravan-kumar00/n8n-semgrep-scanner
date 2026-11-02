@@ -10,7 +10,7 @@ re-serialized with a fixed layout (2-space indent). This:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 MAX_NODES = 5_000
@@ -34,6 +34,8 @@ class NormalizedWorkflow:
     name: str | None
     node_count: int
     node_spans: list[NodeSpan]
+    # Parsed workflow, used by the connection-graph analysis (app/graph.py).
+    data: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def node_at(self, line: int) -> NodeSpan | None:
         """Return the node whose JSON object encloses `line`, if any."""
@@ -85,6 +87,7 @@ def normalize_workflow(data: dict[str, Any]) -> NormalizedWorkflow:
         name=name,
         node_count=len(data["nodes"]),
         node_spans=_index_nodes(text),
+        data=data,
     )
 
 

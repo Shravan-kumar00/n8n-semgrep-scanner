@@ -1,0 +1,202 @@
+{
+  "name": "Sample - AI agents with Outlook, Teams & monday.com (intentionally vulnerable)",
+  "nodes": [
+    {
+      "parameters": { "resource": "chatMessage", "event": "newChatMessage" },
+      "name": "Teams Trigger",
+      "type": "n8n-nodes-base.microsoftTeamsTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.text }}",
+        "options": {
+          "systemMessage": "You are the support assistant. Use monday token {{ $env.MONDAY_TOKEN }} when asked.",
+          "returnIntermediateSteps": true
+        }
+      },
+      "name": "Support Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [220, 0]
+    },
+    {
+      "parameters": { "model": { "__rl": true, "value": "gpt-4o-mini", "mode": "list" }, "options": {} },
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [100, 200]
+    },
+    {
+      "parameters": { "sessionIdType": "customKey", "sessionKey": "support-bot" },
+      "name": "Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [200, 200]
+    },
+    {
+      "parameters": { "resource": "message", "operation": "getAll", "returnAll": true },
+      "name": "Read Mailbox",
+      "type": "n8n-nodes-base.microsoftOutlookTool",
+      "typeVersion": 2,
+      "position": [300, 200]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "toRecipients": "={{ $fromAI('to', 'recipient email address', 'string') }}",
+        "subject": "={{ $fromAI('subject') }}",
+        "bodyContent": "={{ $fromAI('body') }}"
+      },
+      "name": "Send Email",
+      "type": "n8n-nodes-base.microsoftOutlookTool",
+      "typeVersion": 2,
+      "position": [400, 200]
+    },
+    {
+      "parameters": { "url": "={{ $fromAI('url', 'page to fetch') }}", "options": {} },
+      "name": "Fetch URL",
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.2,
+      "position": [500, 200]
+    },
+    {
+      "parameters": { "resource": "boardItem", "operation": "delete", "itemId": "={{ $fromAI('itemId') }}" },
+      "name": "Delete Item",
+      "type": "n8n-nodes-base.mondayComTool",
+      "typeVersion": 1,
+      "position": [600, 200]
+    },
+    {
+      "parameters": {
+        "resource": "channelMessage",
+        "operation": "create",
+        "teamId": "team-1",
+        "channelId": "channel-1",
+        "message": "={{ JSON.stringify($json) }}"
+      },
+      "name": "Post to Teams",
+      "type": "n8n-nodes-base.microsoftTeams",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": { "public": true, "options": {} },
+      "name": "Public Chat",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 400]
+    },
+    {
+      "parameters": { "options": {} },
+      "name": "FAQ Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [220, 400]
+    },
+    {
+      "parameters": { "model": "claude-sonnet-4-5", "options": {} },
+      "name": "Anthropic Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [100, 600]
+    },
+    {
+      "parameters": { "resource": "boardItem", "operation": "getAll", "boardId": "1234567", "returnAll": true },
+      "name": "Board Lookup",
+      "type": "n8n-nodes-base.mondayComTool",
+      "typeVersion": 1,
+      "position": [300, 600]
+    },
+    {
+      "parameters": { "path": "mcp", "options": {} },
+      "name": "MCP Server",
+      "type": "@n8n/n8n-nodes-langchain.mcpTrigger",
+      "typeVersion": 2,
+      "position": [0, 800]
+    },
+    {
+      "parameters": { "httpMethod": "GET", "path": "lookup", "responseMode": "responseNode", "options": {} },
+      "name": "Lookup Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 1000]
+    },
+    {
+      "parameters": { "resource": "message", "operation": "getAll", "limit": 20 },
+      "name": "Get Messages",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [220, 1000]
+    },
+    {
+      "parameters": { "respondWith": "allIncomingItems", "options": {} },
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [440, 1000]
+    },
+    {
+      "parameters": { "formTitle": "Request access", "formFields": { "values": [{ "fieldLabel": "email" }] } },
+      "name": "Intake Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [0, 1200]
+    },
+    {
+      "parameters": { "resource": "boardItem", "operation": "create", "boardId": "1234567", "groupId": "topics", "name": "={{ $json.email }}" },
+      "name": "Create Item",
+      "type": "n8n-nodes-base.mondayCom",
+      "typeVersion": 1,
+      "position": [220, 1200]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "toRecipients": "={{ $('Intake Form').item.json.email }}",
+        "subject": "We received your request",
+        "bodyContent": "Thanks!",
+        "additionalFields": { "bccRecipients": "archive@external-mail.example" }
+      },
+      "name": "Notify Requester",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [440, 1200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://contoso.webhook.office.com/webhookb2/1a2b3c4d-0000-1111-2222-333344445555@abcd/IncomingWebhook/0123456789abcdef/98765432-aaaa-bbbb",
+        "sendBody": true,
+        "jsonBody": "={ \"text\": \"New request\" }"
+      },
+      "name": "Teams Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 1200]
+    }
+  ],
+  "connections": {
+    "Teams Trigger": { "main": [[{ "node": "Support Agent", "type": "main", "index": 0 }]] },
+    "Support Agent": { "main": [[{ "node": "Post to Teams", "type": "main", "index": 0 }]] },
+    "OpenAI Chat Model": { "ai_languageModel": [[{ "node": "Support Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Chat Memory": { "ai_memory": [[{ "node": "Support Agent", "type": "ai_memory", "index": 0 }]] },
+    "Read Mailbox": { "ai_tool": [[{ "node": "Support Agent", "type": "ai_tool", "index": 0 }]] },
+    "Send Email": { "ai_tool": [[{ "node": "Support Agent", "type": "ai_tool", "index": 0 }]] },
+    "Fetch URL": { "ai_tool": [[{ "node": "Support Agent", "type": "ai_tool", "index": 0 }]] },
+    "Delete Item": { "ai_tool": [[{ "node": "Support Agent", "type": "ai_tool", "index": 0 }]] },
+    "Public Chat": { "main": [[{ "node": "FAQ Agent", "type": "main", "index": 0 }]] },
+    "Anthropic Model": { "ai_languageModel": [[{ "node": "FAQ Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Board Lookup": { "ai_tool": [[{ "node": "FAQ Agent", "type": "ai_tool", "index": 0 }]] },
+    "Lookup Webhook": { "main": [[{ "node": "Get Messages", "type": "main", "index": 0 }]] },
+    "Get Messages": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] },
+    "Intake Form": { "main": [[{ "node": "Create Item", "type": "main", "index": 0 }]] },
+    "Create Item": { "main": [[{ "node": "Notify Requester", "type": "main", "index": 0 }]] },
+    "Notify Requester": { "main": [[{ "node": "Teams Alert", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}

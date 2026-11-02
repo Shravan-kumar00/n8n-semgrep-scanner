@@ -2,48 +2,96 @@
  * n8n Workflow Scanner - front-end logic.
  *
  * Security note: every value coming from the API (which may echo parts of the
- * pasted workflow) is inserted with textContent, never innerHTML.
+ * pasted workflow) is inserted with textContent, never innerHTML. The
+ * downloadable HTML report escapes every value with escapeHtml().
  */
 (() => {
   "use strict";
 
   const MAX_BYTES = 2_000_000;          // keep in sync with MAX_PAYLOAD_BYTES
   const REQUEST_TIMEOUT_MS = 90_000;    // a bit above SCAN_TIMEOUT_SECONDS
+  const TOP_PRIORITIES = 5;
 
   // Full class names are listed literally so Tailwind generates them.
   const RISK = {
-    critical: { label: "Critical", badge: "bg-red-600 text-white",     border: "border-l-red-600",    tile: "bg-red-50 text-red-700 ring-red-200" },
-    high:     { label: "High",     badge: "bg-orange-500 text-white",  border: "border-l-orange-500", tile: "bg-orange-50 text-orange-700 ring-orange-200" },
-    medium:   { label: "Medium",   badge: "bg-amber-400 text-amber-950", border: "border-l-amber-400", tile: "bg-amber-50 text-amber-800 ring-amber-200" },
-    low:      { label: "Low",      badge: "bg-sky-500 text-white",     border: "border-l-sky-500",    tile: "bg-sky-50 text-sky-700 ring-sky-200" },
-    info:     { label: "Info",     badge: "bg-slate-400 text-white",   border: "border-l-slate-400",  tile: "bg-slate-50 text-slate-600 ring-slate-200" },
+    critical: { label: "Critical", badge: "bg-red-600 text-white",       border: "border-l-red-600",    tile: "bg-red-50 text-red-700 ring-red-200",       verdict: "bg-red-700",    hex: "#dc2626" },
+    high:     { label: "High",     badge: "bg-orange-500 text-white",    border: "border-l-orange-500", tile: "bg-orange-50 text-orange-700 ring-orange-200", verdict: "bg-orange-600", hex: "#ea580c" },
+    medium:   { label: "Medium",   badge: "bg-amber-400 text-amber-950", border: "border-l-amber-400",  tile: "bg-amber-50 text-amber-800 ring-amber-200",  verdict: "bg-amber-500",  hex: "#d97706" },
+    low:      { label: "Low",      badge: "bg-sky-500 text-white",       border: "border-l-sky-500",    tile: "bg-sky-50 text-sky-700 ring-sky-200",        verdict: "bg-sky-600",    hex: "#0284c7" },
+    info:     { label: "Info",     badge: "bg-slate-400 text-white",     border: "border-l-slate-400",  tile: "bg-slate-50 text-slate-600 ring-slate-200",  verdict: "bg-slate-600",  hex: "#64748b" },
   };
+  const RISK_KEYS = Object.keys(RISK);
+
+  // Report areas, in display order. Keys are rule metadata.category values.
+  const AREAS = {
+    "secrets":        { label: "Secrets & credentials",        blurb: "Passwords, tokens and keys stored in the workflow" },
+    "ai-agent":       { label: "AI agents",                    blurb: "Prompt injection, data leaks and over-powered agent tools" },
+    "integrations":   { label: "Outlook, Teams & monday.com",  blurb: "Mailbox, chat and board data leaving or entering unsafely" },
+    "injection":      { label: "Injection",                    blurb: "Untrusted data inside SQL or shell commands" },
+    "code-execution": { label: "Code execution",               blurb: "Custom code and shell access" },
+    "access-control": { label: "Access control",               blurb: "Endpoints anyone can call" },
+    "transport":      { label: "Transport security",           blurb: "Unencrypted or unverified connections" },
+    "data-exposure":  { label: "Data exposure",                blurb: "Sample data saved in the export" },
+  };
+  const areaOf = (f) => (AREAS[f.category] ? f.category : "other");
+  const areaLabel = (key) => (AREAS[key] ? AREAS[key].label : "Other");
+  const AREA_KEYS = [...Object.keys(AREAS), "other"];
+
+  const FLOW_VERB = { sends: "Sends data to", reads: "Reads data from", receives: "Receives data from" };
 
   const $ = (id) => document.getElementById(id);
   const el = {
     input: $("workflow-input"),
+    gutter: $("gutter"),
+    lineHighlight: $("line-highlight"),
+    includeSecrets: $("include-secrets"),
     meta: $("input-meta"),
     scan: $("btn-scan"),
     scanLabel: $("scan-label"),
     spinner: $("scan-spinner"),
-    sample: $("btn-sample"),
+    sample: $("sample-select"),
     format: $("btn-format"),
     clear: $("btn-clear"),
-    exportBtn: $("btn-export"),
     error: $("error-box"),
     empty: $("empty-state"),
-    results: $("results"),
-    title: $("result-title"),
-    resultMeta: $("result-meta"),
+    report: $("report"),
+    verdict: $("verdict"),
+    verdictLabel: $("verdict-label"),
+    verdictText: $("verdict-text"),
+    title: $("report-title"),
+    reportMeta: $("report-meta"),
     summary: $("summary"),
     warnings: $("warnings"),
+    priorities: $("priorities"),
+    areas: $("areas"),
+    flowsCard: $("flows-card"),
+    flows: $("flows"),
+    filterNote: $("filter-note"),
+    groupBy: $("group-by"),
     findings: $("findings"),
     template: $("finding-template"),
     engine: $("engine-status"),
+    btnPdf: $("btn-pdf"),
+    btnPdfLabel: $("btn-pdf-label"),
+    btnHtml: $("btn-html"),
+    btnMd: $("btn-md"),
+    btnJson: $("btn-json"),
+    fileInput: $("file-input"),
+    upload: $("btn-upload"),
+    dropZone: $("drop-zone"),
+    dropOverlay: $("drop-overlay"),
+    fileName: $("file-name"),
   };
 
+  const PROFILE_LABEL = { full: "All checks", credentials: "Credentials only" };
+  const selectedProfile = () => document.querySelector('input[name="profile"]:checked')?.value || "full";
+
   let lastResult = null;
-  let activeFilter = null; // risk level or null for "all"
+  let lastRequest = null; // { workflow, profile } that produced lastResult (for the PDF)
+  let scannedAt = null;
+  let filter = { risk: null, area: null };
+  let highlighted = null; // { start, end } lines shown by "Show line N in editor"
+  let gutterLines = 0;
 
   // ----------------------------------------------------------------- helpers
   const byteLength = (s) => new TextEncoder().encode(s).length;
@@ -54,12 +102,59 @@
     return `${(n / 1024 / 1024).toFixed(2)} MB`;
   }
 
+  function h(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const shortType = (t) => (t || "").replace(/^n8n-nodes-base\./, "").replace(/^@n8n\/n8n-nodes-langchain\./, "AI · ");
+  const findingDomId = (index) => `finding-${index}`;
+
   function updateMeta() {
     const value = el.input.value;
     const bytes = byteLength(value);
     const lines = value ? value.split("\n").length : 0;
     el.meta.textContent = `${lines} lines · ${formatBytes(bytes)}`;
     el.meta.classList.toggle("text-red-600", bytes > MAX_BYTES);
+    renderGutter(Math.max(lines, 1));
+  }
+
+  // ------------------------------------------------------- editor gutter
+  function renderGutter(lines) {
+    if (lines !== gutterLines) {
+      gutterLines = lines;
+      // Extra blank rows let the gutter scroll as far as the textarea when a
+      // horizontal scrollbar is showing.
+      el.gutter.textContent = Array.from({ length: lines }, (_, i) => i + 1).join("\n") + "\n\n\n";
+    }
+    syncEditorScroll();
+  }
+
+  const editorLineHeight = () => parseFloat(getComputedStyle(el.input).lineHeight) || 20;
+  const editorPaddingTop = () => parseFloat(getComputedStyle(el.input).paddingTop) || 16;
+
+  function syncEditorScroll() {
+    el.gutter.scrollTop = el.input.scrollTop;
+    positionHighlight();
+  }
+
+  function positionHighlight() {
+    if (!highlighted) {
+      el.lineHighlight.classList.add("hidden");
+      return;
+    }
+    const lh = editorLineHeight();
+    el.lineHighlight.style.top = `${editorPaddingTop() + (highlighted.start - 1) * lh - el.input.scrollTop}px`;
+    el.lineHighlight.style.height = `${(highlighted.end - highlighted.start + 1) * lh}px`;
+    el.lineHighlight.classList.remove("hidden");
+  }
+
+  function clearHighlight() {
+    highlighted = null;
+    positionHighlight();
   }
 
   function showError(message) {
@@ -104,23 +199,67 @@
 
   /** Pretty-print with the same layout the server uses so line numbers match. */
   function formatInput(data) {
+    clearHighlight();
     el.input.value = JSON.stringify(data, null, 2) + "\n";
     updateMeta();
   }
 
-  /** Select a line range in the textarea and scroll it into view. */
+  /** Scroll the editor to a line range, highlight it and put the cursor there. */
   function revealLines(start, end) {
     const lines = el.input.value.split("\n");
+    start = Math.min(Math.max(1, start), lines.length);
+    end = Math.min(Math.max(start, end), lines.length);
     let from = 0;
-    for (let i = 0; i < start - 1 && i < lines.length; i++) from += lines[i].length + 1;
-    let to = from;
-    for (let i = start - 1; i < end && i < lines.length; i++) to += lines[i].length + 1;
-    el.input.focus();
-    el.input.setSelectionRange(from, Math.max(from, to - 1));
-    const lineHeight = parseFloat(getComputedStyle(el.input).lineHeight) || 20;
-    el.input.scrollTop = Math.max(0, (start - 4) * lineHeight);
-    if (window.innerWidth < 1024) el.input.scrollIntoView({ behavior: "smooth", block: "center" });
+    for (let i = 0; i < start - 1; i++) from += lines[i].length + 1;
+
+    el.input.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.input.focus({ preventScroll: true });
+    el.input.setSelectionRange(from, from); // cursor at the start of the line
+    // Centre the range in the editor (after setSelectionRange, which may scroll).
+    const lh = editorLineHeight();
+    const rangeHeight = (end - start + 1) * lh;
+    el.input.scrollTop = Math.max(0, (start - 1) * lh + editorPaddingTop() - (el.input.clientHeight - rangeHeight) / 2);
+    el.input.scrollLeft = 0;
+
+    highlighted = { start, end };
+    syncEditorScroll();
   }
+
+  // ------------------------------------------------------------- derivations
+  function verdictFor(summary) {
+    const c = summary.critical || 0, hi = summary.high || 0, m = summary.medium || 0;
+    if (c) return { key: "critical", label: "Critical risk", text: `Do not deploy yet: fix ${plural(c, "critical issue")}${hi ? ` and ${plural(hi, "high issue")}` : ""} first.` };
+    if (hi) return { key: "high", label: "High risk", text: `Fix ${plural(hi, "high-severity issue")} before deploying.` };
+    if (m) return { key: "medium", label: "Moderate risk", text: `No critical or high issues. Review ${plural(m, "medium issue")}.` };
+    if (summary.total) return { key: "low", label: "Low risk", text: "Only minor findings. Review them when convenient." };
+    return { key: "none", label: "No issues found", text: "The rule set found nothing. Still review the workflow manually before deploying." };
+  }
+
+  const VERDICT_BG = { critical: RISK.critical.verdict, high: RISK.high.verdict, medium: RISK.medium.verdict, low: RISK.low.verdict, none: "bg-emerald-600" };
+  const VERDICT_HEX = { critical: "#b91c1c", high: "#c2410c", medium: "#b45309", low: "#0369a1", none: "#047857" };
+
+  function nodeLabel(f) {
+    if (!f.node_name) return "Workflow-level";
+    return `${f.node_name}${f.node_type ? ` (${shortType(f.node_type)})` : ""}`;
+  }
+
+  function groupFindings(findings, mode) {
+    const groups = new Map();
+    const keyOf = mode === "risk" ? (f) => f.risk : mode === "node" ? (f) => f.node_name || "Workflow-level" : areaOf;
+    for (const f of findings) {
+      const k = keyOf(f);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(f);
+    }
+    const order = mode === "risk" ? RISK_KEYS : mode === "area" ? AREA_KEYS : null;
+    const entries = [...groups.entries()];
+    if (order) entries.sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]));
+    else entries.sort((a, b) => worstIndex(a[1]) - worstIndex(b[1]) || a[0].localeCompare(b[0]));
+    const label = mode === "risk" ? (k) => RISK[k]?.label || k : mode === "area" ? areaLabel : (k) => k;
+    return entries.map(([k, items]) => ({ key: k, label: label(k), items }));
+  }
+
+  const worstIndex = (items) => Math.min(...items.map((f) => RISK_KEYS.indexOf(f.risk)));
 
   // ------------------------------------------------------------------- scan
   async function scan() {
@@ -133,10 +272,11 @@
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
+      const request = { workflow: el.input.value, profile: selectedProfile() };
       const response = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflow: el.input.value }),
+        body: JSON.stringify(request),
         signal: controller.signal,
       });
       let body = null;
@@ -146,8 +286,11 @@
         throw new Error(detail);
       }
       lastResult = body;
-      activeFilter = null;
-      render(body);
+      lastRequest = request;
+      scannedAt = new Date();
+      filter = { risk: null, area: null };
+      render();
+      el.report.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
       showError(err.name === "AbortError" ? "The scan took too long and was cancelled." : `Scan failed: ${err.message}`);
     } finally {
@@ -157,43 +300,50 @@
   }
 
   // ----------------------------------------------------------------- render
-  function render(result) {
+  function render() {
+    const r = lastResult;
     el.empty.classList.add("hidden");
-    el.results.classList.remove("hidden");
-    el.results.classList.add("flex");
+    el.report.classList.remove("hidden");
+    el.report.classList.add("flex");
 
-    el.title.textContent = result.workflow_name || "Untitled workflow";
-    el.resultMeta.textContent =
-      `${result.node_count} nodes · ${result.summary.total} findings · ` +
-      `${result.duration_ms} ms · ${result.semgrep_version ? "semgrep " + result.semgrep_version : ""}`;
+    const v = verdictFor(r.summary);
+    el.verdict.className = `flex flex-wrap items-center justify-between gap-4 px-5 py-4 text-white ${VERDICT_BG[v.key]}`;
+    el.verdictLabel.textContent = v.label;
+    el.verdictText.textContent = v.text;
 
-    renderSummary(result.summary);
-    renderWarnings(result.warnings || []);
-    renderFindings(result.findings);
+    el.title.textContent = r.workflow_name || "Untitled workflow";
+    el.reportMeta.textContent = [
+      PROFILE_LABEL[r.profile] || "All checks",
+      plural(r.node_count, "node"),
+      `scanned ${scannedAt.toLocaleString()}`,
+      `${r.duration_ms} ms`,
+      r.semgrep_version ? `Semgrep ${r.semgrep_version}` : null,
+    ].filter(Boolean).join(" · ");
+
+    renderSummary();
+    renderWarnings(r.warnings || []);
+    renderPriorities();
+    renderAreas();
+    renderFlows();
+    renderFindings();
   }
 
-  function renderSummary(summary) {
+  function renderSummary() {
+    const summary = lastResult.summary;
     el.summary.replaceChildren();
     const tiles = [["all", "Total", summary.total, "bg-white text-slate-800 ring-slate-200"]];
-    for (const [key, cfg] of Object.entries(RISK)) tiles.push([key, cfg.label, summary[key] || 0, cfg.tile]);
+    for (const key of RISK_KEYS) tiles.push([key, RISK[key].label, summary[key] || 0, RISK[key].tile]);
 
     for (const [key, label, count, cls] of tiles) {
-      const btn = document.createElement("button");
+      const selected = (filter.risk ?? "all") === key;
+      const btn = h("button", `rounded-lg px-2 py-2 text-center ring-1 ring-inset transition hover:brightness-95 ${cls} ${selected ? "ring-2 ring-indigo-500" : ""}`);
       btn.type = "button";
-      const selected = (activeFilter ?? "all") === key;
-      btn.className = `rounded-lg px-2 py-2 text-center ring-1 ring-inset transition hover:brightness-95 ${cls} ${selected ? "ring-2 ring-indigo-500" : ""}`;
       btn.setAttribute("aria-pressed", String(selected));
-      const n = document.createElement("div");
-      n.className = "text-xl font-bold leading-none";
-      n.textContent = String(count);
-      const l = document.createElement("div");
-      l.className = "mt-1 text-[11px] font-medium uppercase tracking-wide";
-      l.textContent = label;
-      btn.append(n, l);
+      btn.append(h("div", "text-xl font-bold leading-none", String(count)), h("div", "mt-1 text-[11px] font-medium uppercase tracking-wide", label));
       btn.addEventListener("click", () => {
-        activeFilter = key === "all" || activeFilter === key ? null : key;
-        renderSummary(summary);
-        renderFindings(lastResult.findings);
+        filter.risk = key === "all" || filter.risk === key ? null : key;
+        renderSummary();
+        renderFindings();
       });
       el.summary.append(btn);
     }
@@ -203,76 +353,384 @@
     el.warnings.replaceChildren();
     el.warnings.classList.toggle("hidden", warnings.length === 0);
     if (!warnings.length) return;
-    const head = document.createElement("p");
-    head.className = "font-semibold";
-    head.textContent = "Scanner warnings (results may be incomplete):";
-    const list = document.createElement("ul");
-    list.className = "mt-1 list-disc pl-5";
-    for (const w of warnings) {
-      const li = document.createElement("li");
-      li.textContent = w;
-      list.append(li);
-    }
-    el.warnings.append(head, list);
+    const list = h("ul", "mt-1 list-disc pl-5");
+    for (const w of warnings) list.append(h("li", "", w));
+    el.warnings.append(h("p", "font-semibold", "Scanner warnings (results may be incomplete):"), list);
   }
 
-  function renderFindings(findings) {
+  function renderPriorities() {
+    el.priorities.replaceChildren();
+    const top = lastResult.findings
+      .map((f, i) => [f, i])
+      .filter(([f]) => f.risk === "critical" || f.risk === "high")
+      .slice(0, TOP_PRIORITIES);
+    if (!top.length) {
+      el.priorities.append(h("li", "rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800", "Nothing critical or high."));
+      return;
+    }
+    for (const [f, index] of top) {
+      const li = h("li");
+      const btn = h("button", "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-slate-50");
+      btn.type = "button";
+      const text = h("span", "min-w-0");
+      text.append(h("span", "block text-sm font-medium", f.title), h("span", "block text-xs text-slate-500", nodeLabel(f)));
+      btn.append(h("span", `mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${RISK[f.risk].badge}`, RISK[f.risk].label), text);
+      btn.addEventListener("click", () => jumpToFinding(index));
+      li.append(btn);
+      el.priorities.append(li);
+    }
+    const rest = lastResult.findings.filter((f) => f.risk === "critical" || f.risk === "high").length - top.length;
+    if (rest > 0) el.priorities.append(h("li", "px-2 text-xs text-slate-500", `+ ${rest} more critical/high below`));
+  }
+
+  function renderAreas() {
+    el.areas.replaceChildren();
+    const groups = groupFindings(lastResult.findings, "area");
+    if (!groups.length) {
+      el.areas.append(h("p", "text-sm text-slate-500", "No findings in any area."));
+      return;
+    }
+    for (const g of groups) {
+      const worst = RISK_KEYS[worstIndex(g.items)];
+      const selected = filter.area === g.key;
+      const btn = h("button", `flex items-start justify-between gap-2 rounded-lg border px-3 py-2 text-left hover:bg-slate-50 ${selected ? "border-indigo-500 ring-1 ring-indigo-500" : "border-slate-200"}`);
+      btn.type = "button";
+      btn.setAttribute("aria-pressed", String(selected));
+      const text = h("span", "min-w-0");
+      text.append(h("span", "block text-sm font-medium", g.label), h("span", "block text-xs text-slate-500", AREAS[g.key]?.blurb || ""));
+      const count = h("span", `shrink-0 rounded-full px-2 py-0.5 text-xs font-bold ${RISK[worst].badge}`, String(g.items.length));
+      count.title = `Worst: ${RISK[worst].label}`;
+      btn.append(text, count);
+      btn.addEventListener("click", () => {
+        filter.area = selected ? null : g.key;
+        renderAreas();
+        renderFindings();
+      });
+      el.areas.append(btn);
+    }
+  }
+
+  function renderFlows() {
+    const flows = lastResult.data_flows || [];
+    el.flowsCard.classList.toggle("hidden", lastResult.profile === "credentials");
+    el.flows.replaceChildren();
+    if (!flows.length) {
+      const tr = h("tr");
+      const td = h("td", "py-3 text-sm text-slate-500", "No external services detected.");
+      td.colSpan = 5;
+      tr.append(td);
+      el.flows.append(tr);
+      return;
+    }
+    for (const f of flows) {
+      const tr = h("tr", "align-top");
+      const service = h("td", "py-2 pr-3 font-medium");
+      service.append(document.createTextNode(f.service));
+      if (!f.external) service.append(h("span", "ml-1 rounded bg-emerald-50 px-1 text-[10px] font-semibold text-emerald-700", "internal"));
+      const dirClass = f.direction === "sends" ? "text-orange-700" : "text-slate-600";
+      tr.append(
+        service,
+        h("td", `py-2 pr-3 text-xs ${dirClass}`, FLOW_VERB[f.direction] || f.direction),
+        h("td", "py-2 pr-3", f.node_name),
+        h("td", "py-2 pr-3 text-xs text-slate-500", f.via),
+        h("td", "py-2 font-mono text-xs text-slate-500", f.detail),
+      );
+      el.flows.append(tr);
+    }
+  }
+
+  function visibleFindings() {
+    return lastResult.findings
+      .map((f, i) => [f, i])
+      .filter(([f]) => (!filter.risk || f.risk === filter.risk) && (!filter.area || areaOf(f) === filter.area));
+  }
+
+  function renderFindings() {
     el.findings.replaceChildren();
-    const visible = activeFilter ? findings.filter((f) => f.risk === activeFilter) : findings;
+    const all = lastResult.findings;
+    const visible = visibleFindings();
+
+    const parts = [];
+    if (filter.risk) parts.push(RISK[filter.risk].label);
+    if (filter.area) parts.push(areaLabel(filter.area));
+    el.filterNote.textContent = parts.length
+      ? `Showing ${visible.length} of ${all.length} · filtered by ${parts.join(" + ")} (click again to clear)`
+      : `${plural(all.length, "finding")}`;
 
     if (!visible.length) {
-      const li = document.createElement("li");
-      li.className = "rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-6 text-center text-sm text-emerald-800";
-      li.textContent = findings.length
-        ? "No findings at this severity."
-        : "No issues found by the current rule set. Still review the workflow manually before deploying.";
-      el.findings.append(li);
+      el.findings.append(h("div", "rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-6 text-center text-sm text-emerald-800",
+        all.length
+          ? "No findings match this filter."
+          : lastResult.profile === "credentials"
+            ? "No hardcoded passwords, tokens or keys found. Credentials referenced through n8n Credentials or $env are not reported."
+            : "No issues found by the current rule set. Still review the workflow manually before deploying."));
       return;
     }
 
-    for (const f of visible) {
-      const node = el.template.content.firstElementChild.cloneNode(true);
-      const field = (name) => node.querySelector(`[data-field="${name}"]`);
-      const cfg = RISK[f.risk] || RISK.info;
-
-      node.classList.add(cfg.border);
-      field("risk").textContent = cfg.label;
-      field("risk").className += ` ${cfg.badge}`;
-      field("title").textContent = f.title;
-      field("node").textContent = f.node_name
-        ? `Node: ${f.node_name}${f.node_type ? ` (${f.node_type.replace(/^n8n-nodes-base\./, "")})` : ""}`
-        : "Workflow-level";
-      field("lines").textContent = f.start_line === f.end_line ? `Line ${f.start_line}` : `Lines ${f.start_line}–${f.end_line}`;
-      field("lines").addEventListener("click", (e) => {
-        e.preventDefault();
-        revealLines(f.start_line, f.end_line);
-      });
-      field("rule").textContent = f.rule_id;
-      field("message").textContent = f.message;
-      field("snippet").textContent = f.snippet;
-      field("remediation").textContent = f.remediation;
-      field("refs").textContent = [f.cwe, f.owasp].filter(Boolean).join(" · ");
-      el.findings.append(node);
+    const indexOf = new Map(visible.map(([f, i]) => [f, i]));
+    for (const group of groupFindings(visible.map(([f]) => f), el.groupBy.value)) {
+      const section = h("section", "flex flex-col gap-3");
+      const head = h("h4", "flex items-baseline gap-2 border-b border-slate-200 pb-1 text-sm font-semibold text-slate-700", group.label);
+      head.append(h("span", "text-xs font-normal text-slate-400", plural(group.items.length, "finding")));
+      section.append(head);
+      for (const f of group.items) section.append(findingCard(f, indexOf.get(f)));
+      el.findings.append(section);
     }
   }
 
-  function exportReport() {
-    if (!lastResult) return;
-    const blob = new Blob([JSON.stringify(lastResult, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+  function findingCard(f, index) {
+    const card = el.template.content.firstElementChild.cloneNode(true);
+    const field = (name) => card.querySelector(`[data-field="${name}"]`);
+    const cfg = RISK[f.risk] || RISK.info;
+
+    card.id = findingDomId(index);
+    card.classList.add(cfg.border);
+    field("risk").textContent = cfg.label;
+    field("risk").className += ` ${cfg.badge}`;
+    field("title").textContent = f.title;
+    field("brief").textContent = f.brief;
+    field("node").textContent = `${nodeLabel(f)} · ${areaLabel(areaOf(f))}`;
+    field("message").textContent = f.message;
+    field("remediation").textContent = f.remediation;
+    field("snippet").textContent = f.snippet;
+    if (f.exposed_value) {
+      field("exposed").textContent = f.exposed_value;
+      field("exposed-wrap").classList.remove("hidden");
+    }
+    field("lines").textContent = f.start_line === f.end_line ? `Show line ${f.start_line} in editor` : `Show lines ${f.start_line}–${f.end_line} in editor`;
+    field("lines").addEventListener("click", () => revealLines(f.start_line, f.end_line));
+    field("source").textContent = f.source === "workflow-graph" ? "Found by: workflow connection analysis" : "Found by: Semgrep rule";
+    field("rule").textContent = f.rule_id;
+    field("refs").textContent = [f.cwe, f.owasp].filter(Boolean).join(" · ");
+    return card;
+  }
+
+  function jumpToFinding(index) {
+    if (!document.getElementById(findingDomId(index))) {
+      filter = { risk: null, area: null };
+      renderSummary();
+      renderAreas();
+      renderFindings();
+    }
+    const card = document.getElementById(findingDomId(index));
+    if (!card) return;
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
+    card.classList.add("ring-2", "ring-indigo-500");
+    setTimeout(() => card.classList.remove("ring-2", "ring-indigo-500"), 1600);
+  }
+
+  // ----------------------------------------------------------------- export
+  function download(content, type, filename) {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const a = h("a");
     a.href = url;
-    a.download = `n8n-scan-${lastResult.scan_id.slice(0, 8)}.json`;
+    a.download = filename;
     document.body.append(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
   }
 
-  async function loadSample() {
+  function reportFilename(ext) {
+    const slug = (lastResult.workflow_name || "workflow").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "workflow";
+    const date = scannedAt.toISOString().slice(0, 10);
+    return `n8n-security-report-${slug}-${date}.${ext}`;
+  }
+
+  /** The server re-scans the same workflow and renders the findings as a PDF. */
+  async function downloadPdf() {
+    if (!lastRequest) return;
+    el.btnPdf.disabled = true;
+    el.btnPdfLabel.textContent = "Preparing PDF…";
     clearError();
     try {
-      const res = await fetch("/static/samples/vulnerable-workflow.json");
+      const response = await fetch("/api/report.pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...lastRequest, include_secrets: el.includeSecrets.checked }),
+      });
+      if (!response.ok) {
+        let detail = `HTTP ${response.status}`;
+        try { detail = (await response.json()).detail || detail; } catch { /* not JSON */ }
+        throw new Error(detail);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = h("a");
+      a.href = url;
+      a.download = reportFilename("pdf");
+      document.body.append(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showError(`Could not create the PDF: ${err.message}`);
+    } finally {
+      el.btnPdf.disabled = false;
+      el.btnPdfLabel.textContent = "Download PDF";
+    }
+  }
+
+  const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  /** The result as exported: exposed secret values only when the user opts in. */
+  function exportResult() {
+    if (el.includeSecrets.checked) return lastResult;
+    return { ...lastResult, findings: lastResult.findings.map(({ exposed_value, ...f }) => f) };
+  }
+
+  function buildHtmlReport() {
+    const r = exportResult();
+    const v = verdictFor(r.summary);
+    const findings = r.findings;
+    const top = findings.filter((f) => f.risk === "critical" || f.risk === "high").slice(0, TOP_PRIORITIES);
+    const pill = (risk) => `<span class="pill" style="background:${RISK[risk].hex}">${escapeHtml(RISK[risk].label)}</span>`;
+
+    const summaryCells = RISK_KEYS.map((k) =>
+      `<div class="tile"><b style="color:${RISK[k].hex}">${r.summary[k] || 0}</b><span>${RISK[k].label}</span></div>`).join("");
+
+    const areaRows = groupFindings(findings, "area").map((g) => {
+      const counts = RISK_KEYS.map((k) => g.items.filter((f) => f.risk === k).length);
+      return `<tr><td>${escapeHtml(g.label)}</td>${counts.map((c) => `<td class="num">${c || "–"}</td>`).join("")}</tr>`;
+    }).join("");
+
+    const flows = (r.data_flows || []).map((f) =>
+      `<tr><td><b>${escapeHtml(f.service)}</b>${f.external ? "" : " <small>(internal)</small>"}</td><td>${escapeHtml(FLOW_VERB[f.direction] || f.direction)}</td><td>${escapeHtml(f.node_name)}</td><td>${escapeHtml(f.via)}</td><td><code>${escapeHtml(f.detail)}</code></td></tr>`).join("");
+
+    let n = 0;
+    const findingSections = groupFindings(findings, "area").map((g) => `
+      <h3>${escapeHtml(g.label)} <small>(${g.items.length})</small></h3>
+      ${g.items.map((f) => `
+        <div class="finding" style="border-left-color:${RISK[f.risk].hex}">
+          <div class="fhead">${pill(f.risk)} <b>${++n}. ${escapeHtml(f.title)}</b></div>
+          <div class="brief">${escapeHtml(f.brief)}</div>
+          <div class="node">${escapeHtml(nodeLabel(f))}</div>
+          ${f.exposed_value ? `<div class="exposed"><b>Exposed value.</b> <code>${escapeHtml(f.exposed_value)}</code></div>` : ""}
+          <p><b>What's wrong.</b> ${escapeHtml(f.message)}</p>
+          <div class="fix"><b>How to fix.</b> ${escapeHtml(f.remediation)}</div>
+          <details><summary>Technical details</summary>
+            <pre>${escapeHtml(f.snippet)}</pre>
+            <p class="meta">Lines ${f.start_line}–${f.end_line} · ${escapeHtml(f.rule_id)} · ${escapeHtml([f.cwe, f.owasp].filter(Boolean).join(" · "))} · ${f.source === "workflow-graph" ? "workflow connection analysis" : "Semgrep rule"}</p>
+          </details>
+        </div>`).join("")}`).join("");
+
+    return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security report: ${escapeHtml(r.workflow_name || "n8n workflow")}</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 14px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; background: #f1f5f9; margin: 0; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .verdict { color: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; background: ${VERDICT_HEX[v.key]}; }
+  .verdict small { text-transform: uppercase; letter-spacing: .08em; opacity: .8; font-weight: 600; font-size: 11px; }
+  .verdict h1 { margin: 2px 0 4px; font-size: 26px; }
+  h2 { font-size: 16px; margin: 0 0 10px; } h3 { font-size: 15px; margin: 24px 0 10px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+  h3 small, .node, .meta { color: #64748b; font-weight: normal; font-size: 12px; }
+  .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .tile { border: 1px solid #e2e8f0; border-radius: 8px; text-align: center; padding: 8px; } .tile b { display: block; font-size: 22px; } .tile span { font-size: 11px; text-transform: uppercase; color: #475569; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; } th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; color: #64748b; border-bottom: 1px solid #e2e8f0; } td.num { text-align: center; }
+  .pill { color: #fff; font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; vertical-align: 1px; }
+  ol li { margin-bottom: 6px; }
+  .finding { background: #fff; border: 1px solid #e2e8f0; border-left: 4px solid; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; page-break-inside: avoid; }
+  .exposed { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 8px 10px; color: #7f1d1d; margin-top: 8px; word-break: break-all; }
+  .brief { margin-top: 4px; font-weight: 500; }
+  .finding p { margin: 8px 0; } .fix { background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 8px 10px; color: #064e3b; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 10px; border-radius: 8px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  code { font-size: 12px; } summary { cursor: pointer; color: #475569; font-size: 12px; margin-top: 8px; }
+  footer { color: #64748b; font-size: 12px; margin-top: 24px; }
+  @media print { body { background: #fff; } .card, .finding { border-color: #cbd5e1; } details { display: block; } details > summary { display: none; } details pre { display: block; } }
+  @media (max-width: 600px) { .tiles { grid-template-columns: repeat(3, 1fr); } }
+</style></head>
+<body><main>
+  <div class="verdict"><small>Overall risk</small><h1>${escapeHtml(v.label)}</h1><div>${escapeHtml(v.text)}</div></div>
+  <div class="card">
+    <h2>${escapeHtml(r.workflow_name || "Untitled workflow")}</h2>
+    <div class="meta">${escapeHtml(PROFILE_LABEL[r.profile] || "All checks")} · ${plural(r.node_count, "node")} · scanned ${escapeHtml(scannedAt.toLocaleString())} · Semgrep ${escapeHtml(r.semgrep_version)} · scan ${escapeHtml(r.scan_id.slice(0, 8))}</div>
+    <div class="tiles" style="margin-top:14px">${summaryCells}</div>
+  </div>
+  <div class="card"><h2>Fix these first</h2>${top.length
+    ? `<ol>${top.map((f) => `<li>${pill(f.risk)} <b>${escapeHtml(f.title)}</b> <span class="node">· ${escapeHtml(nodeLabel(f))}</span></li>`).join("")}</ol>`
+    : "<p>Nothing critical or high.</p>"}</div>
+  ${areaRows ? `<div class="card"><h2>Risk by area</h2><table><thead><tr><th>Area</th>${RISK_KEYS.map((k) => `<th class="num">${RISK[k].label}</th>`).join("")}</tr></thead><tbody>${areaRows}</tbody></table></div>` : ""}
+  ${r.profile === "credentials" ? "" : `<div class="card"><h2>Where your data goes</h2>${flows
+    ? `<table><thead><tr><th>Service</th><th>Data</th><th>Node</th><th>Used as</th><th>Detail</th></tr></thead><tbody>${flows}</tbody></table>`
+    : "<p>No external services detected.</p>"}</div>`}
+  <div class="card"><h2>All findings (${findings.length})</h2>${findingSections || "<p>No issues found by the current rule set.</p>"}</div>
+  <footer>Generated by n8n Workflow Scanner. ${el.includeSecrets.checked
+    ? "<b>This report contains exposed secret values. Share it only with people allowed to see them, and rotate the secrets.</b>"
+    : "Secret values are masked."} Line numbers refer to the workflow formatted with 2-space indentation.</footer>
+</main></body></html>`;
+  }
+
+  function buildMarkdownReport() {
+    const r = exportResult();
+    const v = verdictFor(r.summary);
+    const cell = (s) => String(s ?? "").replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
+    const lines = [
+      `# Security report: ${r.workflow_name || "Untitled workflow"}`,
+      "",
+      `**Overall risk: ${v.label}.** ${v.text}`,
+      "",
+      `${PROFILE_LABEL[r.profile] || "All checks"} · ${plural(r.node_count, "node")} · scanned ${scannedAt.toLocaleString()} · Semgrep ${r.semgrep_version}`,
+      "",
+      `| ${RISK_KEYS.map((k) => RISK[k].label).join(" | ")} |`,
+      `|${RISK_KEYS.map(() => ":---:").join("|")}|`,
+      `| ${RISK_KEYS.map((k) => r.summary[k] || 0).join(" | ")} |`,
+      "",
+      "## Fix these first",
+      "",
+    ];
+    const top = r.findings.filter((f) => f.risk === "critical" || f.risk === "high").slice(0, TOP_PRIORITIES);
+    if (top.length) top.forEach((f, i) => lines.push(`${i + 1}. **[${RISK[f.risk].label}] ${f.title}** · ${nodeLabel(f)}`));
+    else lines.push("Nothing critical or high.");
+
+    if (r.profile !== "credentials") {
+      lines.push("", "## Where your data goes", "");
+      if ((r.data_flows || []).length) {
+        lines.push("| Service | Data | Node | Used as | Detail |", "|---|---|---|---|---|");
+        for (const f of r.data_flows) lines.push(`| ${cell(f.service)}${f.external ? "" : " (internal)"} | ${cell(FLOW_VERB[f.direction])} | ${cell(f.node_name)} | ${cell(f.via)} | ${cell(f.detail)} |`);
+      } else lines.push("No external services detected.");
+    }
+
+    lines.push("", `## All findings (${r.findings.length})`);
+    let n = 0;
+    for (const g of groupFindings(r.findings, "area")) {
+      lines.push("", `### ${g.label} (${g.items.length})`);
+      for (const f of g.items) {
+        lines.push(
+          "",
+          `#### ${++n}. [${RISK[f.risk].label}] ${f.title}`,
+          "",
+          `_${f.brief}_`,
+          "",
+          `- **Where:** ${nodeLabel(f)}, lines ${f.start_line}–${f.end_line}`,
+          ...(f.exposed_value ? [`- **Exposed value:** \`${f.exposed_value.replace(/`/g, "'").replace(/\s*\n\s*/g, " ")}\``] : []),
+          `- **What's wrong:** ${f.message}`,
+          `- **How to fix:** ${f.remediation}`,
+          `- **Reference:** \`${f.rule_id}\`${f.cwe ? ` · ${f.cwe}` : ""}${f.owasp ? ` · ${f.owasp}` : ""}`,
+          "",
+          "~~~text",
+          f.snippet.replace(/~~~/g, "~ ~ ~"),
+          "~~~",
+        );
+      }
+    }
+    lines.push("", el.includeSecrets.checked
+      ? "_**This report contains exposed secret values.** Share it only with people allowed to see them, and rotate the secrets._"
+      : "_Secret values are masked._", "");
+    return lines.join("\n");
+  }
+
+  // ------------------------------------------------------------------ input
+  async function loadSample() {
+    clearError();
+    const file = el.sample.value;
+    el.sample.value = "";
+    if (!/^[\w-]+\.json$/.test(file)) return;
+    try {
+      const res = await fetch(`/static/samples/${file}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       formatInput(await res.json());
     } catch (err) {
@@ -280,32 +738,115 @@
     }
   }
 
+  /** Read a local .json file into the editor (in the browser), then scan it. */
+  async function loadFile(file) {
+    clearError();
+    if (!file) return;
+    if (!/\.json$/i.test(file.name) && file.type !== "application/json") {
+      showError(`"${file.name}" is not a .json file.`);
+      return;
+    }
+    if (file.size > MAX_BYTES) {
+      showError(`"${file.name}" is ${formatBytes(file.size)}; the limit is ${formatBytes(MAX_BYTES)}.`);
+      return;
+    }
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      showError(`Could not read "${file.name}": ${err.message}`);
+      return;
+    }
+    el.input.value = text;
+    updateMeta();
+    el.fileName.textContent = `${file.name} · ${formatBytes(file.size)}`;
+    el.fileName.classList.remove("hidden");
+    await scan();
+  }
+
+  function setDropActive(active) {
+    el.dropOverlay.classList.toggle("hidden", !active);
+    el.dropOverlay.classList.toggle("flex", active);
+  }
+
   async function loadEngineStatus() {
     try {
       const res = await fetch("/api/health");
       if (!res.ok) return;
-      const h = await res.json();
-      el.engine.textContent = `Semgrep ${h.semgrep_version} · ${h.rules_loaded} rules`;
+      const health = await res.json();
+      el.engine.textContent = `Semgrep ${health.semgrep_version} · ${health.rules_loaded} rules`;
       el.engine.classList.remove("hidden");
     } catch { /* status badge is optional */ }
   }
 
   // ----------------------------------------------------------------- wiring
   el.scan.addEventListener("click", scan);
-  el.sample.addEventListener("click", loadSample);
+  el.sample.addEventListener("change", loadSample);
   el.format.addEventListener("click", () => {
     clearError();
     const data = parseInput();
     if (data) formatInput(data);
   });
   el.clear.addEventListener("click", () => {
+    clearHighlight();
     el.input.value = "";
+    el.fileName.textContent = "";
+    el.fileName.classList.add("hidden");
     updateMeta();
     clearError();
     el.input.focus();
   });
-  el.exportBtn.addEventListener("click", exportReport);
-  el.input.addEventListener("input", updateMeta);
+  el.groupBy.addEventListener("change", () => lastResult && renderFindings());
+  el.btnPdf.addEventListener("click", downloadPdf);
+  el.btnHtml.addEventListener("click", () => lastResult && download(buildHtmlReport(), "text/html", reportFilename("html")));
+  el.btnMd.addEventListener("click", () => lastResult && download(buildMarkdownReport(), "text/markdown", reportFilename("md")));
+  el.btnJson.addEventListener("click", () => lastResult && download(JSON.stringify(exportResult(), null, 2), "application/json", reportFilename("json")));
+
+  el.upload.addEventListener("click", () => el.fileInput.click());
+  el.fileInput.addEventListener("change", () => {
+    const [file] = el.fileInput.files;
+    el.fileInput.value = ""; // allow re-selecting the same file
+    loadFile(file);
+  });
+
+  // Drag-and-drop onto the editor. Dropping elsewhere on the page must not
+  // make the browser navigate to (open) the file.
+  let dragDepth = 0;
+  el.dropZone.addEventListener("dragenter", (e) => {
+    if (!e.dataTransfer?.types.includes("Files")) return;
+    e.preventDefault();
+    dragDepth++;
+    setDropActive(true);
+  });
+  el.dropZone.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer?.types.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+  el.dropZone.addEventListener("dragleave", () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) setDropActive(false);
+  });
+  el.dropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    setDropActive(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 1) {
+      showError("Drop one workflow file at a time.");
+      return;
+    }
+    loadFile(files?.[0]);
+  });
+  window.addEventListener("dragover", (e) => e.preventDefault());
+  window.addEventListener("drop", (e) => e.preventDefault());
+  el.input.addEventListener("input", () => {
+    clearHighlight(); // edits can shift lines
+    updateMeta();
+  });
+  el.input.addEventListener("scroll", syncEditorScroll);
+  // The textarea is resizable; keep the gutter and highlight aligned.
+  new ResizeObserver(syncEditorScroll).observe(el.input);
   el.input.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();

@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from . import __version__
 from .config import Settings, get_settings
-from .models import ErrorResponse, HealthResponse, ScanRequest, ScanResponse
+from .models import ErrorResponse, HealthResponse, PdfReportRequest, ScanRequest, ScanResponse
+from .pdf_report import build_pdf
 from .scanner import ScanError, ScannerBusyError, ScanTimeoutError, SemgrepScanner
 from .workflow import WorkflowValidationError, normalize_workflow, parse_workflow
 
@@ -86,6 +90,14 @@ def get_scanner(request: Request) -> SemgrepScanner:
 
 
 async def read_scan_request(request: Request, cfg: Settings = Depends(get_settings)) -> ScanRequest:
+    return await _read_limited_body(request, cfg, ScanRequest)
+
+
+async def read_pdf_request(request: Request, cfg: Settings = Depends(get_settings)) -> PdfReportRequest:
+    return await _read_limited_body(request, cfg, PdfReportRequest)
+
+
+async def _read_limited_body(request: Request, cfg: Settings, model: type[ScanRequest]) -> ScanRequest:
     """Read the body with a hard size cap *before* any JSON parsing.
 
     Content-Length is checked first, then the stream is counted as it arrives,
@@ -106,11 +118,12 @@ async def read_scan_request(request: Request, cfg: Settings = Depends(get_settin
             raise HTTPException(413, f"Payload exceeds {limit} bytes.")
 
     try:
-        return ScanRequest.model_validate_json(bytes(body))
+        return model.model_validate_json(bytes(body))
     except ValidationError:
         raise HTTPException(
             422,
-            'Request body must be JSON of the form {"workflow": "<n8n workflow JSON string>"}.',
+            'Request body must be JSON of the form {"workflow": "<n8n workflow JSON string>", '
+            '"profile": "full" | "credentials"}.',
         ) from None
 
 
@@ -130,13 +143,39 @@ async def scan_workflow(
     payload: ScanRequest = Depends(read_scan_request),
     scanner: SemgrepScanner = Depends(get_scanner),
 ) -> ScanResponse:
+    return await _run_scan(payload, scanner)
+
+
+@app.post(
+    "/api/report.pdf",
+    response_class=Response,
+    responses={200: {"content": {"application/pdf": {}}}, 422: {"model": ErrorResponse}, 429: {"model": ErrorResponse}},
+)
+async def scan_report_pdf(
+    payload: PdfReportRequest = Depends(read_pdf_request),
+    scanner: SemgrepScanner = Depends(get_scanner),
+) -> Response:
+    """Scan the workflow and return the findings as a downloadable PDF.
+
+    The workflow is scanned again server-side (rather than trusting a report
+    sent by the browser), so the PDF always matches what the rules find.
+    """
+    result = await _run_scan(payload, scanner)
+    scanned_at = datetime.now(timezone.utc)
+    pdf = await asyncio.to_thread(build_pdf, result, payload.include_secrets, scanned_at)
+    slug = re.sub(r"[^a-z0-9]+", "-", (result.workflow_name or "workflow").lower()).strip("-")[:50] or "workflow"
+    filename = f"n8n-security-report-{slug}-{scanned_at:%Y-%m-%d}.pdf"
+    return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+async def _run_scan(payload: ScanRequest, scanner: SemgrepScanner) -> ScanResponse:
     try:
         workflow = normalize_workflow(parse_workflow(payload.workflow))
     except WorkflowValidationError as exc:
         raise HTTPException(422, str(exc)) from None
 
     try:
-        return await scanner.scan(workflow)
+        return await scanner.scan(workflow, payload.profile)
     except ScannerBusyError as exc:
         raise HTTPException(429, str(exc), headers={"Retry-After": "5"}) from None
     except ScanTimeoutError as exc:

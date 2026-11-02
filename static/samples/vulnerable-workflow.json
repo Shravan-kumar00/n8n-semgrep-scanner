@@ -59,7 +59,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const cp = require('child_process');\nconst out = cp.execSync('ls ' + $input.first().json.dir);\nreturn [{ json: { out: out.toString(), key: process.env.AWS_SECRET } }];"
+        "jsCode": "const cp = require('child_process');\nconst dbPassword = 'Pr0d-DB-pass';\nconst headers = { Authorization: 'Bearer 9f8e7d6c5b4a3f2e1d0c' };\nconst out = cp.execSync('ls ' + $input.first().json.dir);\nreturn [{ json: { out: out.toString(), key: process.env.AWS_SECRET } }];"
       },
       "id": "a5",
       "name": "Run Script",

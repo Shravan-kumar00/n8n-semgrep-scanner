@@ -28,11 +28,13 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .models import RISK_ORDER, Finding, ScanResponse, ScanSummary
+from .graph import analyze_workflow
+from .models import RISK_ORDER, Finding, ScanProfile, ScanResponse, ScanSummary
 from .workflow import NormalizedWorkflow
 
 logger = logging.getLogger(__name__)
 
+SECRETS_CATEGORY = "secrets"  # rules in this category form the "credentials" profile
 TARGET_FILENAME = "workflow.json"  # .json extension -> Semgrep's JSON parser
 MAX_SNIPPET_LINES = 15
 MAX_SNIPPET_LINE_CHARS = 300
@@ -85,8 +87,12 @@ class SemgrepScanner:
         return sum(len(pattern.findall(f.read_text(encoding="utf-8"))) for f in files)
 
     # ------------------------------------------------------------------- scan
-    async def scan(self, workflow: NormalizedWorkflow) -> ScanResponse:
-        """Scan a normalized workflow. Raises ScanError subclasses on failure."""
+    async def scan(self, workflow: NormalizedWorkflow, profile: ScanProfile = "full") -> ScanResponse:
+        """Scan a normalized workflow. Raises ScanError subclasses on failure.
+
+        profile="credentials" reports only rules with metadata.category
+        "secrets" (hardcoded passwords, tokens, keys, credentials in URLs).
+        """
         try:
             await asyncio.wait_for(self._slots.acquire(), timeout=self.settings.queue_wait_seconds)
         except asyncio.TimeoutError:
@@ -100,17 +106,28 @@ class SemgrepScanner:
             self._slots.release()
 
         findings, warnings = self._parse_results(raw, workflow)
+        if profile == "credentials":
+            findings = [f for f in findings if f.category == SECRETS_CATEGORY]
+            data_flows = []
+        else:
+            graph_findings, data_flows = analyze_workflow(workflow)
+            findings = sorted(
+                findings + graph_findings,
+                key=lambda f: (RISK_ORDER.index(f.risk), f.start_line, f.rule_id),
+            )
         duration_ms = int((time.monotonic() - started) * 1000)
-        logger.info("scan %s finished: %d findings in %d ms", scan_id, len(findings), duration_ms)
+        logger.info("scan %s (%s) finished: %d findings in %d ms", scan_id, profile, len(findings), duration_ms)
 
         return ScanResponse(
             scan_id=scan_id,
+            profile=profile,
             workflow_name=workflow.name,
             node_count=workflow.node_count,
             duration_ms=duration_ms,
             semgrep_version=self.version,
             summary=_summarize(findings),
             findings=findings,
+            data_flows=data_flows,
             warnings=warnings,
         )
 
@@ -205,12 +222,13 @@ class SemgrepScanner:
         self, data: dict[str, Any], workflow: NormalizedWorkflow
     ) -> tuple[list[Finding], list[str]]:
         lines = workflow.text.splitlines()
+        raw_bytes = workflow.text.encode("utf-8")  # semgrep offsets are byte offsets
         findings: list[Finding] = []
         seen: set[tuple[str, int, int]] = set()
 
         for result in data.get("results", []):
             try:
-                finding = _to_finding(result, lines, workflow)
+                finding = _to_finding(result, lines, raw_bytes, workflow)
             except (KeyError, TypeError, ValueError):
                 logger.exception("skipping malformed semgrep result")
                 continue
@@ -219,6 +237,7 @@ class SemgrepScanner:
                 seen.add(key)
                 findings.append(finding)
 
+        findings = _drop_nested_secret_findings(findings)
         findings.sort(key=lambda f: (RISK_ORDER.index(f.risk), f.start_line, f.rule_id))
 
         warnings = []
@@ -231,7 +250,33 @@ class SemgrepScanner:
 
 
 # ---------------------------------------------------------------------- helpers
-def _to_finding(result: dict[str, Any], lines: list[str], workflow: NormalizedWorkflow) -> Finding:
+def _drop_nested_secret_findings(findings: list[Finding]) -> list[Finding]:
+    """Report one leaked secret once.
+
+    Several secret rules can fire on the same value, e.g. the name/value rule
+    matches a whole {"name": "Authorization", "value": "Basic ..."} object
+    while the Bearer/Basic rule matches the value line inside it. A secrets
+    finding is dropped when another secrets finding of equal or higher risk
+    covers a strictly larger line range around it.
+    """
+    secrets = [f for f in findings if f.category == SECRETS_CATEGORY]
+
+    def covered(inner: Finding) -> bool:
+        return any(
+            outer is not inner
+            and outer.start_line <= inner.start_line
+            and inner.end_line <= outer.end_line
+            and (outer.end_line - outer.start_line) > (inner.end_line - inner.start_line)
+            and RISK_ORDER.index(outer.risk) <= RISK_ORDER.index(inner.risk)
+            for outer in secrets
+        )
+
+    return [f for f in findings if f.category != SECRETS_CATEGORY or not covered(f)]
+
+
+def _to_finding(
+    result: dict[str, Any], lines: list[str], raw_bytes: bytes, workflow: NormalizedWorkflow
+) -> Finding:
     extra = result.get("extra", {})
     meta = extra.get("metadata", {}) or {}
     start = int(result["start"]["line"])
@@ -243,17 +288,21 @@ def _to_finding(result: dict[str, Any], lines: list[str], workflow: NormalizedWo
 
     category = str(meta.get("category", "general"))
     snippet = _snippet(lines, start, end)
-    if category == "secrets":
+    exposed_value = None
+    if category == SECRETS_CATEGORY:
         snippet = _mask_secrets(snippet)
+        exposed_value = _exposed_value(raw_bytes, result)
 
     node = workflow.node_at(start)
     # Semgrep prefixes rule ids with the config path ("rules.n8n-..."); keep the last part.
     rule_id = str(result["check_id"]).rsplit(".", 1)[-1]
+    message = " ".join(str(extra.get("message", "")).split())
 
     return Finding(
         rule_id=rule_id,
         title=str(meta.get("title", rule_id)),
-        message=" ".join(str(extra.get("message", "")).split()),
+        brief=str(meta.get("brief") or _first_sentence(message)),
+        message=message,
         risk=risk,  # type: ignore[arg-type]
         category=category,
         cwe=_first(meta.get("cwe")),
@@ -262,9 +311,54 @@ def _to_finding(result: dict[str, Any], lines: list[str], workflow: NormalizedWo
         start_line=start,
         end_line=end,
         snippet=snippet,
+        exposed_value=exposed_value,
         node_name=node.name if node else None,
         node_type=node.type if node else None,
     )
+
+
+_KEY_VALUE_MATCH = re.compile(r'^"(?:[^"\\]|\\.)*"\s*:\s*("(?:[^"\\]|\\.)*")$', re.DOTALL)
+MAX_EXPOSED_CHARS = 500
+
+
+def _exposed_value(raw_bytes: bytes, result: dict[str, Any]) -> str | None:
+    """The exact leaked text for a secrets finding, unescaped from JSON.
+
+    * "key": "value" match         -> value
+    * {"name": .., "value": ..}   -> the "value" field
+    * regex match inside a string -> the matched text (e.g. password = 'x',
+      Password=x;, Bearer x, scheme://user:pass@host)
+    """
+    try:
+        start, end = int(result["start"]["offset"]), int(result["end"]["offset"])
+        text = raw_bytes[start:end].decode("utf-8").strip()
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        return None
+    if not text:
+        return None
+
+    value: Any = None
+    if text.startswith("{"):
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("value"), str):
+            value = obj["value"]
+    elif (match := _KEY_VALUE_MATCH.match(text)):
+        value = json.loads(match.group(1))
+    if value is None:
+        try:  # undo JSON string escaping of a fragment (\" -> ", \n -> newline)
+            value = json.loads(f'"{text}"')
+        except json.JSONDecodeError:
+            value = text
+    value = str(value)
+    return value if len(value) <= MAX_EXPOSED_CHARS else value[:MAX_EXPOSED_CHARS] + "…"
+
+
+def _first_sentence(text: str) -> str:
+    match = re.match(r"(.+?[.!?])(\s|$)", text)
+    return match.group(1) if match else text
 
 
 def _first(value: Any) -> str | None:
@@ -283,23 +377,42 @@ def _snippet(lines: list[str], start: int, end: int) -> str:
     return textwrap.dedent("\n".join(out))
 
 
-_JSON_VALUE_STRING = re.compile(r'(:\s*)"((?:[^"\\]|\\.)*)"')
+_JSON_KEY_VALUE = re.compile(r'"((?:[^"\\]|\\.)*)"(\s*:\s*)"((?:[^"\\]|\\.)*)"')
 _URL_USERINFO = re.compile(r"^(=?\s*[a-z][a-z0-9+.-]*://[^/\s:@]+:)[^/\s@]+@", re.IGNORECASE)
+_URL_SECRET_QUERY = re.compile(
+    r"([?&](?:password|passwd|pwd|pass|secret|client_secret|api[_-]?key|apikey|token|access_token|auth_token|key|sig)=)[^&#\s]+",
+    re.IGNORECASE,
+)
+_TEAMS_WEBHOOK_PATH = re.compile(r"(/webhookb2/)\S+", re.IGNORECASE)  # the path is the secret
+_URL_PREFIX = re.compile(r"^=?\s*[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+# Keys whose values identify a field rather than hold a secret.
+_UNMASKED_KEYS = {"name", "type", "id"}
+
+
+def _mask_value(value: str) -> str:
+    if _URL_PREFIX.match(value):  # keep the URL readable, hide only the credentials
+        value = _URL_USERINFO.sub(r"\g<1>****@", value)
+        value = _TEAMS_WEBHOOK_PATH.sub(r"\g<1>****", value)
+        return _URL_SECRET_QUERY.sub(r"\g<1>****", value)
+    if len(value) < 8:
+        return "*" * len(value)
+    return value[:4] + "*" * min(len(value) - 4, 12)
 
 
 def _mask_secrets(snippet: str) -> str:
-    """Mask string values in secret findings so reports can be shared safely."""
+    """Mask string values in secret findings so reports can be shared safely.
+
+    Every value is masked (including short passwords and "=" expressions,
+    which can embed literals) except field identifiers such as "name".
+    """
 
     def repl(match: re.Match[str]) -> str:
-        value = match.group(2)
-        if _URL_USERINFO.match(value):  # keep the URL readable, hide only the password
-            masked = _URL_USERINFO.sub(r"\g<1>****@", value)
-            return f'{match.group(1)}"{masked}"'
-        if value.startswith("=") or len(value) < 6:  # expressions / trivial values
+        key, sep, value = match.groups()
+        if key in _UNMASKED_KEYS or not value:
             return match.group(0)
-        return f'{match.group(1)}"{value[:4]}{"*" * min(len(value) - 4, 12)}"'
+        return f'"{key}"{sep}"{_mask_value(value)}"'
 
-    return _JSON_VALUE_STRING.sub(repl, snippet)
+    return _JSON_KEY_VALUE.sub(repl, snippet)
 
 
 def _summarize(findings: list[Finding]) -> ScanSummary:
