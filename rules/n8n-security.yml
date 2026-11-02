@@ -1,0 +1,351 @@
+# =============================================================================
+# Semgrep rules for n8n workflow exports (JSON)
+#
+# Conventions used by the scanner backend (app/scanner.py):
+#   metadata.title        Short human-readable title shown in the UI
+#   metadata.risk         critical | high | medium | low | info  (UI severity)
+#   metadata.category     secrets | transport | injection | code-execution |
+#                         access-control | data-exposure
+#   metadata.cwe          CWE reference
+#   metadata.remediation  Actionable fix shown to the user
+#
+# Notes on Semgrep's JSON matching:
+#   * `{..., "k": v, ...}` matches any object containing that key (order-free).
+#   * When a metavariable binds a JSON *key*, its text includes the quotes, so
+#     key regexes are written as  ^"?(...)"?$ .
+#   * n8n expressions are strings starting with "=" (e.g. "={{ $json.x }}").
+#     Values coming from expressions/credentials are NOT hardcoded secrets, so
+#     the secret rules exclude them.
+# =============================================================================
+rules:
+  # ---------------------------------------------------------------------------
+  # SECRETS
+  # ---------------------------------------------------------------------------
+  - id: n8n-hardcoded-secret-parameter
+    languages: [json]
+    severity: ERROR
+    message: >-
+      Parameter $KEY holds a literal value that looks like a secret. Workflow
+      JSON is exported, shared and versioned in plain text, so this value is
+      exposed to anyone who can read the workflow.
+    patterns:
+      - pattern: '"$KEY": "$VALUE"'
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^"?(password|passwd|pwd|pass|secret|client_?secret|secret_?key|api_?key|apikey|access_?key|access_?token|auth_?token|refresh_?token|bearer_?token|token|private_?key|signing_?secret|webhook_?secret)"?$
+      # Non-empty literal (not an "=" expression), at least 6 chars.
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^"?[^="\s{][^"]{5,}"?$
+    metadata:
+      title: Hardcoded secret in node parameter
+      risk: high
+      category: secrets
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: >-
+        Move the value into an n8n Credential (Settings > Credentials) and
+        reference it from the node, or read it from an environment variable
+        via an expression such as {{ $env.MY_SECRET }}. Rotate the exposed
+        secret, since it has already been stored in plain text.
+
+  - id: n8n-hardcoded-secret-name-value-pair
+    languages: [json]
+    severity: ERROR
+    message: >-
+      A header/query/body/Set-node field named $NAME is assigned a literal
+      value. Authentication material in name/value pairs is stored in clear
+      text inside the workflow.
+    patterns:
+      - pattern: '{..., "name": "$NAME", "value": "$VALUE", ...}'
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)^"?(authorization|proxy-authorization|x-api-key|api[-_]?key|apikey|x-auth-token|x-access-token|access[-_]?token|auth[-_]?token|token|password|passwd|secret|client[-_]?secret|private[-_]?key|cookie)"?$
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^"?[^="\s{][^"]{5,}"?$
+    metadata:
+      title: Hardcoded credential in header / field
+      risk: high
+      category: secrets
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: >-
+        Use the HTTP Request node's "Authentication" setting with a Generic
+        Credential (Header Auth, Bearer, OAuth2, ...) instead of hand-written
+        headers, or reference {{ $env.VAR }}. Rotate the exposed value.
+
+  - id: n8n-known-secret-format
+    languages: [json]
+    severity: ERROR
+    message: >-
+      A string matches the format of a well-known provider secret (cloud key,
+      VCS token, chat token, payment key, LLM API key, JWT or private key).
+    pattern-either:
+      - pattern-regex: \bAKIA[0-9A-Z]{16}\b                        # AWS access key id
+      - pattern-regex: \bgh[pousr]_[A-Za-z0-9]{36,}\b              # GitHub token
+      - pattern-regex: \bgithub_pat_[A-Za-z0-9_]{60,}\b            # GitHub fine-grained PAT
+      - pattern-regex: \bxox[abposr]-[A-Za-z0-9-]{10,}\b           # Slack token
+      - pattern-regex: \b[rs]k_live_[0-9A-Za-z]{20,}\b             # Stripe live key
+      - pattern-regex: \bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{32,}\b    # OpenAI / Anthropic style key
+      - pattern-regex: \bAIza[0-9A-Za-z_-]{35}\b                   # Google API key
+      - pattern-regex: \bglpat-[A-Za-z0-9_-]{20,}\b                # GitLab PAT
+      - pattern-regex: \beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}  # JWT
+      - pattern-regex: -----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----
+    metadata:
+      title: Provider secret / private key embedded in workflow
+      risk: critical
+      category: secrets
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: >-
+        Revoke and rotate this secret immediately at the provider, then store
+        the replacement in an n8n Credential or an environment variable.
+        Check git history / shared exports for other copies.
+
+  - id: n8n-credentials-in-url
+    languages: [json]
+    severity: ERROR
+    message: >-
+      A URL embeds a username and password (scheme://user:pass@host). The
+      credentials are stored in clear text and are often written to logs.
+    pattern-regex: \b[a-z][a-z0-9+.-]*://[^/\s:@"]+:[^/\s@"]+@[^\s"]+
+    metadata:
+      title: Credentials embedded in URL
+      risk: high
+      category: secrets
+      cwe: "CWE-522: Insufficiently Protected Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: >-
+        Remove user:password from the URL and configure Basic Auth (or the
+        database/service credential type) through n8n Credentials.
+
+  # ---------------------------------------------------------------------------
+  # TRANSPORT SECURITY
+  # ---------------------------------------------------------------------------
+  - id: n8n-tls-verification-disabled
+    languages: [json]
+    severity: ERROR
+    message: >-
+      TLS certificate verification is disabled. Traffic from this node can be
+      intercepted or tampered with by a man-in-the-middle.
+    pattern-either:
+      - pattern: '"allowUnauthorizedCerts": true'
+      - pattern: '"ignoreSSLIssues": true'
+      - pattern: '"ignoreSslIssues": true'
+      - pattern: '"rejectUnauthorized": false'
+      - pattern: '"skipSslVerification": true'
+      - pattern: '"ssl": "disable"'
+    metadata:
+      title: TLS certificate verification disabled
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: >-
+        Re-enable certificate validation. For internal services with private
+        CAs, add the CA to the n8n container trust store (NODE_EXTRA_CA_CERTS)
+        instead of turning verification off.
+
+  - id: n8n-cleartext-http-url
+    languages: [json]
+    severity: WARNING
+    message: >-
+      Node calls a non-local endpoint over plain HTTP ($URL). Request data,
+      tokens and responses travel unencrypted.
+    patterns:
+      - pattern: '"url": "$URL"'
+      - metavariable-regex:
+          metavariable: $URL
+          regex: ^"?=?\s*http://(?!(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)(:\d+)?([/"]|$))
+    metadata:
+      title: Clear-text HTTP endpoint
+      risk: medium
+      category: transport
+      cwe: "CWE-319: Cleartext Transmission of Sensitive Information"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use an https:// endpoint.
+
+  # ---------------------------------------------------------------------------
+  # INJECTION / CODE EXECUTION
+  # ---------------------------------------------------------------------------
+  - id: n8n-command-injection-via-expression
+    languages: [json]
+    severity: ERROR
+    message: >-
+      A shell command is built from an n8n expression. If any referenced data
+      originates from a webhook, form, email or external API, an attacker can
+      inject arbitrary shell commands on the n8n host / SSH target.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?n8n-nodes-base\.(executeCommand|ssh)"?$
+      - pattern: '"command": "$CMD"'
+      - metavariable-regex:
+          metavariable: $CMD
+          # metavariable-regex is anchored at the start -> leading (?s).*
+          regex: (?s).*\{\{.*\}\}
+    metadata:
+      title: Command injection via expression in shell node
+      risk: critical
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Never interpolate untrusted data into shell commands. Validate input
+        against a strict allow-list in a preceding node, or replace the shell
+        call with a purpose-built node / HTTP API. If a command is unavoidable,
+        pass data via files or environment, not string concatenation.
+
+  - id: n8n-execute-command-node
+    languages: [json]
+    severity: WARNING
+    message: >-
+      The workflow uses the Execute Command node, which runs arbitrary shell
+      commands with the privileges of the n8n process.
+    pattern: '"type": "n8n-nodes-base.executeCommand"'
+    metadata:
+      title: Execute Command node in use
+      risk: medium
+      category: code-execution
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Prefer dedicated nodes. If shell access is required, keep commands
+        static, run n8n as an unprivileged user in a hardened container, and
+        consider disabling the node instance-wide with
+        NODES_EXCLUDE='["n8n-nodes-base.executeCommand"]'.
+
+  - id: n8n-code-node-dangerous-api
+    languages: [json]
+    severity: ERROR
+    message: >-
+      Code in $FIELD uses a high-risk API (dynamic evaluation, child processes,
+      filesystem/network modules or environment access).
+    patterns:
+      - pattern: '"$FIELD": "$CODE"'
+      - metavariable-regex:
+          metavariable: $FIELD
+          regex: ^"?(jsCode|functionCode|code|pythonCode)"?$
+      - metavariable-regex:
+          metavariable: $CODE
+          regex: (?s).*(child_process|\beval\s*\(|new\s+Function\s*\(|require\s*\(\W*(fs|child_process|net|vm|os|http|https|dgram|worker_threads)\b|process\.env|\bexecSync\s*\(|\bspawn(Sync)?\s*\(|\bsubprocess\b|os\.system|__import__|\bexec\s*\()
+    metadata:
+      title: Risky API in Code / Function node
+      risk: high
+      category: code-execution
+      cwe: "CWE-95: Eval Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Remove eval/new Function and process spawning from Code nodes. Keep
+        NODE_FUNCTION_ALLOW_BUILTIN / NODE_FUNCTION_ALLOW_EXTERNAL restricted
+        (unset or an explicit allow-list), use N8N_BLOCK_ENV_ACCESS_IN_NODE=true,
+        and pass configuration through credentials rather than process.env.
+
+  - id: n8n-code-node-present
+    languages: [json]
+    severity: INFO
+    message: >-
+      Custom code node ($TYPE) found. Custom code bypasses the safety of
+      built-in nodes and should be reviewed.
+    patterns:
+      - pattern: '"type": "$TYPE"'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?n8n-nodes-base\.(code|function|functionItem)"?$
+    metadata:
+      title: Custom code node requires review
+      risk: info
+      category: code-execution
+      cwe: "CWE-94: Improper Control of Generation of Code"
+      remediation: >-
+        Review the code for unsafe handling of external input and keep the
+        logic minimal. Prefer built-in nodes where possible.
+
+  - id: n8n-sql-injection-via-expression
+    languages: [json]
+    severity: ERROR
+    message: >-
+      A SQL statement is built with an n8n expression ({{ ... }}). Values
+      interpolated directly into SQL allow SQL injection.
+    patterns:
+      - pattern: '"query": "$SQL"'
+      - metavariable-regex:
+          metavariable: $SQL
+          regex: (?is).*\b(select|insert|update|delete|merge|drop|alter|create|exec|call|with)\b.*\{\{.*\}\}
+    metadata:
+      title: SQL injection via expression
+      risk: high
+      category: injection
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Use query parameters: write placeholders ($1, $2 for Postgres; ? for
+        MySQL) and supply the values via the node's "Query Parameters" /
+        queryReplacement option, or use the Insert/Update operations.
+
+  # ---------------------------------------------------------------------------
+  # ACCESS CONTROL
+  # ---------------------------------------------------------------------------
+  - id: n8n-webhook-without-authentication
+    languages: [json]
+    severity: WARNING
+    message: >-
+      An inbound trigger ($TYPE) accepts requests without authentication.
+      Anyone who discovers the URL can trigger the workflow.
+    patterns:
+      - pattern-inside: '{..., "type": "$TYPE", ...}'
+      - metavariable-regex:
+          metavariable: $TYPE
+          regex: ^"?n8n-nodes-base\.(webhook|formTrigger)"?$
+      - pattern-either:
+          # authentication omitted -> n8n default is "none"
+          - patterns:
+              - pattern: '"parameters": $P'
+              - pattern-not: '"parameters": {..., "authentication": $A, ...}'
+          - pattern: '"authentication": "none"'
+    metadata:
+      title: Webhook / form trigger without authentication
+      risk: medium
+      category: access-control
+      cwe: "CWE-306: Missing Authentication for Critical Function"
+      owasp: "A01:2021 - Broken Access Control"
+      remediation: >-
+        Set Authentication to Header Auth, Basic Auth or JWT Auth on the
+        trigger. If the caller cannot authenticate (third-party callbacks),
+        verify an HMAC signature in the first node and reject mismatches.
+
+  - id: n8n-webhook-permissive-cors
+    languages: [json]
+    severity: WARNING
+    message: >-
+      The webhook allows requests from any origin (allowedOrigins = "*"), so
+      any website can call it from a visitor's browser.
+    pattern: '"allowedOrigins": "*"'
+    metadata:
+      title: Webhook allows any CORS origin
+      risk: medium
+      category: access-control
+      cwe: "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: List the specific origins that need access in "Allowed Origins (CORS)".
+
+  # ---------------------------------------------------------------------------
+  # DATA EXPOSURE
+  # ---------------------------------------------------------------------------
+  - id: n8n-pinned-data-exported
+    languages: [json]
+    severity: INFO
+    message: >-
+      The export contains pinned execution data. Pinned data is real sample
+      input/output and frequently contains personal data or tokens.
+    pattern: '"pinData": {..., "$NODE": $DATA, ...}'
+    metadata:
+      title: Pinned execution data included in export
+      risk: low
+      category: data-exposure
+      cwe: "CWE-200: Exposure of Sensitive Information"
+      remediation: >-
+        Unpin the data (or delete the "pinData" block) before sharing or
+        committing the workflow.

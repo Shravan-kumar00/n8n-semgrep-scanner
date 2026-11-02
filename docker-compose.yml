@@ -1,0 +1,33 @@
+services:
+  scanner:
+    build: .
+    image: n8n-semgrep-scanner:1.0.0
+    container_name: n8n-semgrep-scanner
+    # Bound to localhost only. Put a reverse proxy with TLS + SSO in front
+    # before exposing this to your team network (see README).
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      MAX_PAYLOAD_BYTES: "2000000"
+      SCAN_TIMEOUT_SECONDS: "60"
+      SEMGREP_RULE_TIMEOUT: "20"
+      MAX_CONCURRENT_SCANS: "4"
+      WEB_CONCURRENCY: "2"
+      ENABLE_DOCS: "false"
+      # CORS_ORIGINS: "https://scanner.example.com"
+    # --- hardening ---------------------------------------------------------
+    read_only: true                 # immutable root filesystem
+    tmpfs:
+      - /tmp:size=256m,mode=1777    # only writable location (scan temp files)
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

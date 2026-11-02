@@ -1,0 +1,94 @@
+{
+  "name": "Sample - Insecure Order Sync (intentionally vulnerable)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "orders",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "a1",
+      "name": "Order Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://erp.example.com/api/orders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer s3cr3t-erp-token-123" },
+            { "name": "X-Request-Id", "value": "={{ $json.id }}" }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "a2",
+      "name": "Push to ERP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM customers WHERE email = '{{ $json.body.email }}'"
+      },
+      "id": "a3",
+      "name": "Lookup Customer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "command": "=tar -czf /backups/{{ $json.body.filename }}.tgz /data/orders"
+      },
+      "id": "a4",
+      "name": "Archive Orders",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cp = require('child_process');\nconst out = cp.execSync('ls ' + $input.first().json.dir);\nreturn [{ json: { out: out.toString(), key: process.env.AWS_SECRET } }];"
+      },
+      "id": "a5",
+      "name": "Run Script",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://admin:Winter2026!@reports.example.com/upload",
+        "apiKey": "AKIAIOSFODNN7EXAMPLE",
+        "password": "P@ssw0rd-prod"
+      },
+      "id": "a6",
+      "name": "Upload Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 0]
+    }
+  ],
+  "connections": {
+    "Order Webhook": { "main": [[{ "node": "Push to ERP", "type": "main", "index": 0 }]] },
+    "Push to ERP": { "main": [[{ "node": "Lookup Customer", "type": "main", "index": 0 }]] },
+    "Lookup Customer": { "main": [[{ "node": "Archive Orders", "type": "main", "index": 0 }]] },
+    "Archive Orders": { "main": [[{ "node": "Run Script", "type": "main", "index": 0 }]] },
+    "Run Script": { "main": [[{ "node": "Upload Report", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {
+    "Order Webhook": [{ "json": { "body": { "email": "jane.doe@example.com" } } }]
+  },
+  "settings": { "executionOrder": "v1" }
+}
