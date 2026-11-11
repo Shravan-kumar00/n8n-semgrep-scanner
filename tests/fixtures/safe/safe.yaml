@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: app
+      image: app:1.0.0
+      env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db
+              key: password
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+---
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "$TITLE"
+        env:
+          TITLE: ${{ github.event.head_commit.message }}
+          TOKEN: ${{ secrets.TOKEN }}

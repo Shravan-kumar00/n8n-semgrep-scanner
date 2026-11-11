@@ -1,0 +1,43 @@
+# Sample - intentionally risky Kubernetes manifest + GitHub Actions workflow
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      containers:
+        - name: orders
+          image: registry.example.com/orders:1.4.2
+          env:
+            - name: DB_HOST
+              value: db.internal
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            runAsUser: 0
+          volumeMounts:
+            - name: docker
+              mountPath: /var/run/docker.sock
+      volumes:
+        - name: docker
+          hostPath:
+            path: /var/run/docker.sock
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-config
+data:
+  db_password: Kub3rn3tesPass!
+  api_token: "cm-token-1234567890abcdef"
+---
+name: triage
+on: issues
+permissions: write-all
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "New issue ${{ github.event.issue.title }}" | ./label.sh

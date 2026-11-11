@@ -1,8 +1,8 @@
 /**
- * n8n Workflow Scanner - front-end logic.
+ * Security Scanner - front-end logic.
  *
  * Security note: every value coming from the API (which may echo parts of the
- * pasted workflow) is inserted with textContent, never innerHTML. The
+ * scanned file) is inserted with textContent, never innerHTML. The
  * downloadable HTML report escapes every value with escapeHtml().
  */
 (() => {
@@ -14,28 +14,39 @@
 
   // Full class names are listed literally so Tailwind generates them.
   const RISK = {
-    critical: { label: "Critical", badge: "bg-red-600 text-white",       border: "border-l-red-600",    tile: "bg-red-50 text-red-700 ring-red-200",       verdict: "bg-red-700",    hex: "#dc2626" },
-    high:     { label: "High",     badge: "bg-orange-500 text-white",    border: "border-l-orange-500", tile: "bg-orange-50 text-orange-700 ring-orange-200", verdict: "bg-orange-600", hex: "#ea580c" },
-    medium:   { label: "Medium",   badge: "bg-amber-400 text-amber-950", border: "border-l-amber-400",  tile: "bg-amber-50 text-amber-800 ring-amber-200",  verdict: "bg-amber-500",  hex: "#d97706" },
-    low:      { label: "Low",      badge: "bg-sky-500 text-white",       border: "border-l-sky-500",    tile: "bg-sky-50 text-sky-700 ring-sky-200",        verdict: "bg-sky-600",    hex: "#0284c7" },
-    info:     { label: "Info",     badge: "bg-slate-400 text-white",     border: "border-l-slate-400",  tile: "bg-slate-50 text-slate-600 ring-slate-200",  verdict: "bg-slate-600",  hex: "#64748b" },
+    critical: { label: "Critical", badge: "bg-red-600 text-white",       border: "border-l-red-600",    tile: "bg-red-50 text-red-700 ring-red-200",       verdict: "bg-gradient-to-r from-red-700 to-red-600",       hex: "#dc2626" },
+    high:     { label: "High",     badge: "bg-orange-500 text-white",    border: "border-l-orange-500", tile: "bg-orange-50 text-orange-700 ring-orange-200", verdict: "bg-gradient-to-r from-orange-600 to-orange-500", hex: "#ea580c" },
+    medium:   { label: "Medium",   badge: "bg-amber-400 text-amber-950", border: "border-l-amber-400",  tile: "bg-amber-50 text-amber-800 ring-amber-200",  verdict: "bg-gradient-to-r from-amber-600 to-amber-500",   hex: "#d97706" },
+    low:      { label: "Low",      badge: "bg-sky-500 text-white",       border: "border-l-sky-500",    tile: "bg-sky-50 text-sky-700 ring-sky-200",        verdict: "bg-gradient-to-r from-sky-700 to-sky-600",       hex: "#0284c7" },
+    info:     { label: "Info",     badge: "bg-slate-400 text-white",     border: "border-l-slate-400",  tile: "bg-slate-50 text-slate-600 ring-slate-200",  verdict: "bg-gradient-to-r from-slate-700 to-slate-600",   hex: "#64748b" },
   };
   const RISK_KEYS = Object.keys(RISK);
 
   // Report areas, in display order. Keys are rule metadata.category values.
   const AREAS = {
-    "secrets":        { label: "Secrets & credentials",        blurb: "Passwords, tokens and keys stored in the workflow" },
+    "secrets":        { label: "Secrets & credentials",        blurb: "Passwords, tokens and keys stored in the file" },
     "ai-agent":       { label: "AI agents",                    blurb: "Prompt injection, data leaks and over-powered agent tools" },
     "integrations":   { label: "Outlook, Teams & monday.com",  blurb: "Mailbox, chat and board data leaving or entering unsafely" },
-    "injection":      { label: "Injection",                    blurb: "Untrusted data inside SQL or shell commands" },
-    "code-execution": { label: "Code execution",               blurb: "Custom code and shell access" },
-    "access-control": { label: "Access control",               blurb: "Endpoints anyone can call" },
+    "injection":      { label: "Injection",                    blurb: "Untrusted data inside SQL, shell commands or HTML" },
+    "code-execution": { label: "Code execution",               blurb: "eval, unsafe deserialisation and remote scripts" },
+    "crypto":         { label: "Cryptography",                 blurb: "Weak hashes, ciphers and unverified tokens" },
     "transport":      { label: "Transport security",           blurb: "Unencrypted or unverified connections" },
+    "configuration":  { label: "Insecure configuration",       blurb: "Root containers, public resources, debug mode" },
+    "access-control": { label: "Access control",               blurb: "Endpoints anyone can call" },
     "data-exposure":  { label: "Data exposure",                blurb: "Sample data saved in the export" },
   };
   const areaOf = (f) => (AREAS[f.category] ? f.category : "other");
   const areaLabel = (key) => (AREAS[key] ? AREAS[key].label : "Other");
   const AREA_KEYS = [...Object.keys(AREAS), "other"];
+
+  // Colours per language group (chip badge on light background / editor badge on dark).
+  const GROUP_STYLE = {
+    "Automation":              { chip: "bg-rose-100 text-rose-700",   dark: "bg-rose-500/20 text-rose-300" },
+    "Application code":        { chip: "bg-indigo-100 text-indigo-700", dark: "bg-indigo-500/20 text-indigo-300" },
+    "Infrastructure & config": { chip: "bg-teal-100 text-teal-700",   dark: "bg-teal-500/20 text-teal-300" },
+    "Other":                   { chip: "bg-slate-200 text-slate-700", dark: "bg-slate-500/20 text-slate-300" },
+  };
+  const groupStyle = (lang) => GROUP_STYLE[lang?.group] || GROUP_STYLE.Other;
 
   const FLOW_VERB = { sends: "Sends data to", reads: "Reads data from", receives: "Receives data from" };
 
@@ -49,7 +60,7 @@
     scan: $("btn-scan"),
     scanLabel: $("scan-label"),
     spinner: $("scan-spinner"),
-    sample: $("sample-select"),
+    sample: $("btn-sample"),
     format: $("btn-format"),
     clear: $("btn-clear"),
     error: $("error-box"),
@@ -59,6 +70,7 @@
     verdictLabel: $("verdict-label"),
     verdictText: $("verdict-text"),
     title: $("report-title"),
+    reportBadge: $("report-badge"),
     reportMeta: $("report-meta"),
     summary: $("summary"),
     warnings: $("warnings"),
@@ -68,9 +80,15 @@
     flows: $("flows"),
     filterNote: $("filter-note"),
     groupBy: $("group-by"),
+    groupByNode: $("group-by-node"),
     findings: $("findings"),
     template: $("finding-template"),
     engine: $("engine-status"),
+    statLanguages: $("stat-languages"),
+    statRules: $("stat-rules"),
+    picker: $("language-picker"),
+    detectNote: $("detect-note"),
+    editorBadge: $("editor-badge"),
     btnPdf: $("btn-pdf"),
     btnPdfLabel: $("btn-pdf-label"),
     btnHtml: $("btn-html"),
@@ -86,11 +104,15 @@
   const PROFILE_LABEL = { full: "All checks", credentials: "Credentials only" };
   const selectedProfile = () => document.querySelector('input[name="profile"]:checked')?.value || "full";
 
+  /** @type {Array<{id:string,label:string,group:string,short:string,extensions:string[],filenames:string[],sample:string|null,rules:number}>} */
+  let languages = [];
+  let language = null;      // selected language object
+  let fileName = null;      // name of the uploaded / sample file, if any
   let lastResult = null;
-  let lastRequest = null; // { workflow, profile } that produced lastResult (for the PDF)
+  let lastRequest = null;   // request that produced lastResult (re-used for the PDF)
   let scannedAt = null;
   let filter = { risk: null, area: null };
-  let highlighted = null; // { start, end } lines shown by "Show line N in editor"
+  let highlighted = null;   // { start, end } lines shown by "Show line N"
   let gutterLines = 0;
 
   // ----------------------------------------------------------------- helpers
@@ -112,17 +134,134 @@
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const shortType = (t) => (t || "").replace(/^n8n-nodes-base\./, "").replace(/^@n8n\/n8n-nodes-langchain\./, "AI · ");
   const findingDomId = (index) => `finding-${index}`;
+  const isWorkflow = () => language?.id === "n8n";
+  const linesLabel = (f) => (f.start_line === f.end_line ? `Line ${f.start_line}` : `Lines ${f.start_line}–${f.end_line}`);
+  const reportIsWorkflow = () => lastResult?.language === "n8n";
 
+  function showError(message) {
+    el.error.textContent = message;
+    el.error.classList.remove("hidden");
+  }
+
+  function clearError() {
+    el.error.textContent = "";
+    el.error.classList.add("hidden");
+  }
+
+  function setLoading(loading) {
+    el.scan.disabled = loading;
+    el.spinner.classList.toggle("hidden", !loading);
+    el.scanLabel.textContent = loading ? "Scanning…" : isWorkflow() ? "Scan workflow" : "Scan file";
+  }
+
+  // ------------------------------------------------------------- languages
+  async function loadLanguages() {
+    try {
+      const res = await fetch("/api/languages");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      languages = await res.json();
+    } catch (err) {
+      showError(`Could not load the list of languages: ${err.message}`);
+      languages = [{ id: "n8n", label: "n8n workflow", group: "Automation", short: "n8n", extensions: [".json"], filenames: [], sample: null, rules: 0 }];
+    }
+    el.statLanguages.textContent = String(languages.length);
+    renderPicker();
+    selectLanguage("n8n", { quiet: true });
+  }
+
+  function renderPicker() {
+    el.picker.replaceChildren();
+    const groups = [...new Set(languages.map((l) => l.group))];
+    for (const group of groups) {
+      el.picker.append(h("p", "pt-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 lg:w-44", group));
+      const row = h("div", "flex flex-wrap gap-2");
+      for (const lang of languages.filter((l) => l.group === group)) {
+        const btn = h("button", "group flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-left text-xs font-medium text-slate-700 transition hover:border-indigo-300 hover:bg-indigo-50/50");
+        btn.type = "button";
+        btn.dataset.lang = lang.id;
+        btn.setAttribute("role", "radio");
+        btn.title = `${lang.label} · ${plural(lang.rules, "rule")}${lang.extensions.length ? ` · ${lang.extensions.slice(0, 4).join(" ")}` : ""}`;
+        btn.append(h("span", `min-w-[2rem] rounded px-1 py-0.5 text-center font-mono text-[10px] font-bold ${groupStyle(lang).chip}`, lang.short),
+          h("span", "", lang.label.replace(/ \(.*\)$/, "")));
+        btn.addEventListener("click", () => selectLanguage(lang.id));
+        row.append(btn);
+      }
+      el.picker.append(row);
+    }
+  }
+
+  function selectLanguage(id, { quiet = false, detectedFrom = null } = {}) {
+    const lang = languages.find((l) => l.id === id) || languages[0];
+    language = lang;
+    for (const btn of el.picker.querySelectorAll("button[data-lang]")) {
+      const on = btn.dataset.lang === lang.id;
+      btn.setAttribute("aria-checked", String(on));
+      btn.classList.toggle("ring-2", on);
+      btn.classList.toggle("ring-indigo-500", on);
+      btn.classList.toggle("border-indigo-500", on);
+      btn.classList.toggle("bg-indigo-50", on);
+    }
+    el.editorBadge.textContent = lang.short;
+    el.editorBadge.className = `ml-2 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${groupStyle(lang).dark}`;
+    el.format.classList.toggle("hidden", lang.id !== "n8n");
+    el.sample.disabled = !lang.sample;
+    el.sample.classList.toggle("opacity-50", !lang.sample);
+    el.input.placeholder = placeholderFor(lang);
+    el.scanLabel.textContent = lang.id === "n8n" ? "Scan workflow" : "Scan file";
+    if (detectedFrom) {
+      el.detectNote.textContent = `Detected ${lang.label.replace(/ \(.*\)$/, "")} from ${detectedFrom}`;
+      el.detectNote.classList.remove("hidden");
+    } else if (!quiet) {
+      el.detectNote.classList.add("hidden");
+    }
+  }
+
+  function placeholderFor(lang) {
+    if (lang.id === "n8n") {
+      return 'Paste an n8n workflow export, click "Upload file", or drag a file here…\n\n{\n  "name": "My workflow",\n  "nodes": [ … ],\n  "connections": { … }\n}';
+    }
+    const ext = lang.filenames[0] || lang.extensions.slice(0, 3).join(", ");
+    return `Paste ${lang.label} here, click "Upload file", or drag a file onto this box…\n\nAccepted: ${ext}`;
+  }
+
+  /** Pick a language for an uploaded file: exact names, then extension, then sniffing. */
+  function detectLanguage(name, text) {
+    const base = name.split(/[\\/]/).pop();
+    const lower = base.toLowerCase();
+    const byName = languages.find((l) => l.filenames.some((f) => f.toLowerCase() === lower));
+    if (byName) return byName.id;
+    if (/^(docker|container)file(\..+)?$/i.test(base)) return "dockerfile";
+    const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "";
+    if (ext === ".json") {
+      try {
+        const data = JSON.parse(text);
+        if (data && typeof data === "object" && !Array.isArray(data) && Array.isArray(data.nodes)) return "n8n";
+      } catch { /* not JSON: fall through */ }
+      return "generic";
+    }
+    const byExt = languages.find((l) => l.id !== "n8n" && l.id !== "generic" && l.extensions.includes(ext));
+    if (byExt) return byExt.id;
+    if (/^#!.*\b(ba|z)?sh\b/.test(text)) return "bash";
+    if (/^#!.*\bpython/.test(text)) return "python";
+    if (/^#!.*\bnode\b/.test(text)) return "javascript";
+    return "generic";
+  }
+
+  // ---------------------------------------------------------- editor bits
   function updateMeta() {
     const value = el.input.value;
     const bytes = byteLength(value);
     const lines = value ? value.split("\n").length : 0;
     el.meta.textContent = `${lines} lines · ${formatBytes(bytes)}`;
-    el.meta.classList.toggle("text-red-600", bytes > MAX_BYTES);
+    el.meta.classList.toggle("text-red-400", bytes > MAX_BYTES);
     renderGutter(Math.max(lines, 1));
   }
 
-  // ------------------------------------------------------- editor gutter
+  function setFileName(name) {
+    fileName = name;
+    el.fileName.textContent = name || "untitled";
+  }
+
   function renderGutter(lines) {
     if (lines !== gutterLines) {
       gutterLines = lines;
@@ -157,53 +296,6 @@
     positionHighlight();
   }
 
-  function showError(message) {
-    el.error.textContent = message;
-    el.error.classList.remove("hidden");
-  }
-
-  function clearError() {
-    el.error.textContent = "";
-    el.error.classList.add("hidden");
-  }
-
-  function setLoading(loading) {
-    el.scan.disabled = loading;
-    el.spinner.classList.toggle("hidden", !loading);
-    el.scanLabel.textContent = loading ? "Scanning…" : "Scan Workflow";
-  }
-
-  /** Parse locally first for instant feedback; returns the object or null. */
-  function parseInput() {
-    const raw = el.input.value.trim();
-    if (!raw) {
-      showError("Paste an n8n workflow JSON first.");
-      return null;
-    }
-    if (byteLength(raw) > MAX_BYTES) {
-      showError(`Workflow is larger than the ${formatBytes(MAX_BYTES)} limit.`);
-      return null;
-    }
-    try {
-      const data = JSON.parse(raw);
-      if (!data || typeof data !== "object" || Array.isArray(data) || !Array.isArray(data.nodes)) {
-        showError('This does not look like an n8n workflow: expected an object with a "nodes" array.');
-        return null;
-      }
-      return data;
-    } catch (err) {
-      showError(`Invalid JSON: ${err.message}`);
-      return null;
-    }
-  }
-
-  /** Pretty-print with the same layout the server uses so line numbers match. */
-  function formatInput(data) {
-    clearHighlight();
-    el.input.value = JSON.stringify(data, null, 2) + "\n";
-    updateMeta();
-  }
-
   /** Scroll the editor to a line range, highlight it and put the cursor there. */
   function revealLines(start, end) {
     const lines = el.input.value.split("\n");
@@ -214,8 +306,7 @@
 
     el.input.scrollIntoView({ behavior: "smooth", block: "center" });
     el.input.focus({ preventScroll: true });
-    el.input.setSelectionRange(from, from); // cursor at the start of the line
-    // Centre the range in the editor (after setSelectionRange, which may scroll).
+    el.input.setSelectionRange(from, from);
     const lh = editorLineHeight();
     const rangeHeight = (end - start + 1) * lh;
     el.input.scrollTop = Math.max(0, (start - 1) * lh + editorPaddingTop() - (el.input.clientHeight - rangeHeight) / 2);
@@ -225,6 +316,28 @@
     syncEditorScroll();
   }
 
+  function setEditorText(text) {
+    clearHighlight();
+    el.input.value = text;
+    el.input.scrollTop = 0;
+    updateMeta();
+  }
+
+  /** n8n only: parse locally first for instant feedback; returns the object or null. */
+  function parseWorkflow(raw) {
+    try {
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== "object" || Array.isArray(data) || !Array.isArray(data.nodes)) {
+        showError('This does not look like an n8n workflow (expected an object with a "nodes" array). If it is source code or a config file, pick its language in step 1.');
+        return null;
+      }
+      return data;
+    } catch (err) {
+      showError(`Invalid JSON: ${err.message}. If this is not an n8n workflow, pick its language in step 1.`);
+      return null;
+    }
+  }
+
   // ------------------------------------------------------------- derivations
   function verdictFor(summary) {
     const c = summary.critical || 0, hi = summary.high || 0, m = summary.medium || 0;
@@ -232,15 +345,19 @@
     if (hi) return { key: "high", label: "High risk", text: `Fix ${plural(hi, "high-severity issue")} before deploying.` };
     if (m) return { key: "medium", label: "Moderate risk", text: `No critical or high issues. Review ${plural(m, "medium issue")}.` };
     if (summary.total) return { key: "low", label: "Low risk", text: "Only minor findings. Review them when convenient." };
-    return { key: "none", label: "No issues found", text: "The rule set found nothing. Still review the workflow manually before deploying." };
+    return { key: "none", label: "No issues found", text: "The rule set found nothing. Still review it manually before deploying." };
   }
 
-  const VERDICT_BG = { critical: RISK.critical.verdict, high: RISK.high.verdict, medium: RISK.medium.verdict, low: RISK.low.verdict, none: "bg-emerald-600" };
+  const VERDICT_BG = { critical: RISK.critical.verdict, high: RISK.high.verdict, medium: RISK.medium.verdict, low: RISK.low.verdict, none: "bg-gradient-to-r from-emerald-700 to-emerald-600" };
   const VERDICT_HEX = { critical: "#b91c1c", high: "#c2410c", medium: "#b45309", low: "#0369a1", none: "#047857" };
 
-  function nodeLabel(f) {
-    if (!f.node_name) return "Workflow-level";
-    return `${f.node_name}${f.node_type ? ` (${shortType(f.node_type)})` : ""}`;
+  /** Where a finding is: node (n8n) or line + area (code). */
+  function locationLabel(f) {
+    if (reportIsWorkflow()) {
+      if (!f.node_name) return "Workflow-level";
+      return `${f.node_name}${f.node_type ? ` (${shortType(f.node_type)})` : ""}`;
+    }
+    return `${linesLabel(f)} · ${areaLabel(areaOf(f))}`;
   }
 
   function groupFindings(findings, mode) {
@@ -264,15 +381,29 @@
   // ------------------------------------------------------------------- scan
   async function scan() {
     clearError();
-    const data = parseInput();
-    if (!data) return;
-    formatInput(data);
+    const raw = el.input.value;
+    if (!raw.trim()) {
+      showError("Paste, upload or drop a file first.");
+      return;
+    }
+    if (byteLength(raw) > MAX_BYTES) {
+      showError(`The file is larger than the ${formatBytes(MAX_BYTES)} limit.`);
+      return;
+    }
+    let content = raw;
+    if (isWorkflow()) {
+      const data = parseWorkflow(raw);
+      if (!data) return;
+      // Same layout as the server so line numbers match.
+      content = JSON.stringify(data, null, 2) + "\n";
+      if (content !== raw) setEditorText(content);
+    }
 
     setLoading(true);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const request = { workflow: el.input.value, profile: selectedProfile() };
+      const request = { content, language: language.id, filename: fileName, profile: selectedProfile() };
       const response = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -307,18 +438,24 @@
     el.report.classList.add("flex");
 
     const v = verdictFor(r.summary);
-    el.verdict.className = `flex flex-wrap items-center justify-between gap-4 px-5 py-4 text-white ${VERDICT_BG[v.key]}`;
+    el.verdict.className = `flex flex-wrap items-center justify-between gap-4 px-5 py-5 text-white ${VERDICT_BG[v.key]}`;
     el.verdictLabel.textContent = v.label;
     el.verdictText.textContent = v.text;
 
-    el.title.textContent = r.workflow_name || "Untitled workflow";
+    const lang = languages.find((l) => l.id === r.language);
+    el.reportBadge.textContent = lang?.short || r.language;
+    el.reportBadge.className = `rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${groupStyle(lang).chip}`;
+    el.title.textContent = r.target_name || r.workflow_name || (r.language === "n8n" ? "Untitled workflow" : `${r.language_label} file`);
     el.reportMeta.textContent = [
+      r.language_label,
+      r.node_count != null ? plural(r.node_count, "node") : plural(r.line_count, "line"),
       PROFILE_LABEL[r.profile] || "All checks",
-      plural(r.node_count, "node"),
       `scanned ${scannedAt.toLocaleString()}`,
       `${r.duration_ms} ms`,
-      r.semgrep_version ? `Semgrep ${r.semgrep_version}` : null,
-    ].filter(Boolean).join(" · ");
+    ].join(" · ");
+
+    el.groupByNode.hidden = !reportIsWorkflow();
+    if (!reportIsWorkflow() && el.groupBy.value === "node") el.groupBy.value = "area";
 
     renderSummary();
     renderWarnings(r.warnings || []);
@@ -336,10 +473,10 @@
 
     for (const [key, label, count, cls] of tiles) {
       const selected = (filter.risk ?? "all") === key;
-      const btn = h("button", `rounded-lg px-2 py-2 text-center ring-1 ring-inset transition hover:brightness-95 ${cls} ${selected ? "ring-2 ring-indigo-500" : ""}`);
+      const btn = h("button", `rounded-xl px-2 py-2.5 text-center ring-1 ring-inset transition hover:brightness-95 ${cls} ${selected ? "ring-2 ring-indigo-500" : ""}`);
       btn.type = "button";
       btn.setAttribute("aria-pressed", String(selected));
-      btn.append(h("div", "text-xl font-bold leading-none", String(count)), h("div", "mt-1 text-[11px] font-medium uppercase tracking-wide", label));
+      btn.append(h("div", "text-2xl font-bold leading-none", String(count)), h("div", "mt-1 text-[11px] font-medium uppercase tracking-wide", label));
       btn.addEventListener("click", () => {
         filter.risk = key === "all" || filter.risk === key ? null : key;
         renderSummary();
@@ -370,10 +507,10 @@
     }
     for (const [f, index] of top) {
       const li = h("li");
-      const btn = h("button", "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-slate-50");
+      const btn = h("button", "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-slate-50");
       btn.type = "button";
       const text = h("span", "min-w-0");
-      text.append(h("span", "block text-sm font-medium", f.title), h("span", "block text-xs text-slate-500", nodeLabel(f)));
+      text.append(h("span", "block text-sm font-medium", f.title), h("span", "block text-xs text-slate-500", locationLabel(f)));
       btn.append(h("span", `mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${RISK[f.risk].badge}`, RISK[f.risk].label), text);
       btn.addEventListener("click", () => jumpToFinding(index));
       li.append(btn);
@@ -393,7 +530,7 @@
     for (const g of groups) {
       const worst = RISK_KEYS[worstIndex(g.items)];
       const selected = filter.area === g.key;
-      const btn = h("button", `flex items-start justify-between gap-2 rounded-lg border px-3 py-2 text-left hover:bg-slate-50 ${selected ? "border-indigo-500 ring-1 ring-indigo-500" : "border-slate-200"}`);
+      const btn = h("button", `flex items-start justify-between gap-2 rounded-xl border px-3 py-2 text-left hover:bg-slate-50 ${selected ? "border-indigo-500 ring-1 ring-indigo-500" : "border-slate-200"}`);
       btn.type = "button";
       btn.setAttribute("aria-pressed", String(selected));
       const text = h("span", "min-w-0");
@@ -412,7 +549,8 @@
 
   function renderFlows() {
     const flows = lastResult.data_flows || [];
-    el.flowsCard.classList.toggle("hidden", lastResult.profile === "credentials");
+    // Only n8n workflows have a data-flow inventory.
+    el.flowsCard.classList.toggle("hidden", !reportIsWorkflow() || lastResult.profile === "credentials");
     el.flows.replaceChildren();
     if (!flows.length) {
       const tr = h("tr");
@@ -462,8 +600,8 @@
         all.length
           ? "No findings match this filter."
           : lastResult.profile === "credentials"
-            ? "No hardcoded passwords, tokens or keys found. Credentials referenced through n8n Credentials or $env are not reported."
-            : "No issues found by the current rule set. Still review the workflow manually before deploying."));
+            ? "No hardcoded passwords, tokens or keys found."
+            : "No issues found by the current rule set. Still review it manually before deploying."));
       return;
     }
 
@@ -489,7 +627,9 @@
     field("risk").className += ` ${cfg.badge}`;
     field("title").textContent = f.title;
     field("brief").textContent = f.brief;
-    field("node").textContent = `${nodeLabel(f)} · ${areaLabel(areaOf(f))}`;
+    field("node").textContent = reportIsWorkflow()
+      ? `${locationLabel(f)} · ${areaLabel(areaOf(f))}`
+      : `${lastResult.target_name || lastResult.language_label} · ${areaLabel(areaOf(f))}`;
     field("message").textContent = f.message;
     field("remediation").textContent = f.remediation;
     field("snippet").textContent = f.snippet;
@@ -497,8 +637,9 @@
       field("exposed").textContent = f.exposed_value;
       field("exposed-wrap").classList.remove("hidden");
     }
-    field("lines").textContent = f.start_line === f.end_line ? `Show line ${f.start_line} in editor` : `Show lines ${f.start_line}–${f.end_line} in editor`;
-    field("lines").addEventListener("click", () => revealLines(f.start_line, f.end_line));
+    field("jump").textContent = `${linesLabel(f)} ↗`;
+    field("jump").title = "Show in editor";
+    field("jump").addEventListener("click", () => revealLines(f.start_line, f.end_line));
     field("source").textContent = f.source === "workflow-graph" ? "Found by: workflow connection analysis" : "Found by: Semgrep rule";
     field("rule").textContent = f.rule_id;
     field("refs").textContent = [f.cwe, f.owasp].filter(Boolean).join(" · ");
@@ -521,7 +662,7 @@
 
   // ----------------------------------------------------------------- export
   function download(content, type, filename) {
-    const url = URL.createObjectURL(new Blob([content], { type }));
+    const url = URL.createObjectURL(content instanceof Blob ? content : new Blob([content], { type }));
     const a = h("a");
     a.href = url;
     a.download = filename;
@@ -532,12 +673,21 @@
   }
 
   function reportFilename(ext) {
-    const slug = (lastResult.workflow_name || "workflow").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "workflow";
-    const date = scannedAt.toISOString().slice(0, 10);
-    return `n8n-security-report-${slug}-${date}.${ext}`;
+    const name = lastResult.target_name || lastResult.workflow_name || lastResult.language;
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "scan";
+    return `security-report-${slug}-${scannedAt.toISOString().slice(0, 10)}.${ext}`;
   }
 
-  /** The server re-scans the same workflow and renders the findings as a PDF. */
+  const reportName = (r) => r.target_name || r.workflow_name || (r.language === "n8n" ? "Untitled workflow" : `${r.language_label} file`);
+  const reportScope = (r) => `${r.language_label} · ${r.node_count != null ? plural(r.node_count, "node") : plural(r.line_count, "line")}`;
+
+  /** The result as exported: exposed secret values only when the user opts in. */
+  function exportResult() {
+    if (el.includeSecrets.checked) return lastResult;
+    return { ...lastResult, findings: lastResult.findings.map(({ exposed_value, ...f }) => f) };
+  }
+
+  /** The server re-scans the same content and renders the findings as a PDF. */
   async function downloadPdf() {
     if (!lastRequest) return;
     el.btnPdf.disabled = true;
@@ -554,15 +704,7 @@
         try { detail = (await response.json()).detail || detail; } catch { /* not JSON */ }
         throw new Error(detail);
       }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = h("a");
-      a.href = url;
-      a.download = reportFilename("pdf");
-      document.body.append(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      download(await response.blob(), "application/pdf", reportFilename("pdf"));
     } catch (err) {
       showError(`Could not create the PDF: ${err.message}`);
     } finally {
@@ -572,12 +714,6 @@
   }
 
   const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-  /** The result as exported: exposed secret values only when the user opts in. */
-  function exportResult() {
-    if (el.includeSecrets.checked) return lastResult;
-    return { ...lastResult, findings: lastResult.findings.map(({ exposed_value, ...f }) => f) };
-  }
 
   function buildHtmlReport() {
     const r = exportResult();
@@ -604,7 +740,7 @@
         <div class="finding" style="border-left-color:${RISK[f.risk].hex}">
           <div class="fhead">${pill(f.risk)} <b>${++n}. ${escapeHtml(f.title)}</b></div>
           <div class="brief">${escapeHtml(f.brief)}</div>
-          <div class="node">${escapeHtml(nodeLabel(f))}</div>
+          <div class="node">${escapeHtml(locationLabel(f))}</div>
           ${f.exposed_value ? `<div class="exposed"><b>Exposed value.</b> <code>${escapeHtml(f.exposed_value)}</code></div>` : ""}
           <p><b>What's wrong.</b> ${escapeHtml(f.message)}</p>
           <div class="fix"><b>How to fix.</b> ${escapeHtml(f.remediation)}</div>
@@ -616,7 +752,7 @@
 
     return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Security report: ${escapeHtml(r.workflow_name || "n8n workflow")}</title>
+<title>Security report: ${escapeHtml(reportName(r))}</title>
 <style>
   :root { color-scheme: light; }
   body { font: 14px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; background: #f1f5f9; margin: 0; }
@@ -646,21 +782,21 @@
 <body><main>
   <div class="verdict"><small>Overall risk</small><h1>${escapeHtml(v.label)}</h1><div>${escapeHtml(v.text)}</div></div>
   <div class="card">
-    <h2>${escapeHtml(r.workflow_name || "Untitled workflow")}</h2>
-    <div class="meta">${escapeHtml(PROFILE_LABEL[r.profile] || "All checks")} · ${plural(r.node_count, "node")} · scanned ${escapeHtml(scannedAt.toLocaleString())} · Semgrep ${escapeHtml(r.semgrep_version)} · scan ${escapeHtml(r.scan_id.slice(0, 8))}</div>
+    <h2>${escapeHtml(reportName(r))}</h2>
+    <div class="meta">${escapeHtml(reportScope(r))} · ${escapeHtml(PROFILE_LABEL[r.profile] || "All checks")} · scanned ${escapeHtml(scannedAt.toLocaleString())} · Semgrep ${escapeHtml(r.semgrep_version)} · scan ${escapeHtml(r.scan_id.slice(0, 8))}</div>
     <div class="tiles" style="margin-top:14px">${summaryCells}</div>
   </div>
   <div class="card"><h2>Fix these first</h2>${top.length
-    ? `<ol>${top.map((f) => `<li>${pill(f.risk)} <b>${escapeHtml(f.title)}</b> <span class="node">· ${escapeHtml(nodeLabel(f))}</span></li>`).join("")}</ol>`
+    ? `<ol>${top.map((f) => `<li>${pill(f.risk)} <b>${escapeHtml(f.title)}</b> <span class="node">· ${escapeHtml(locationLabel(f))}</span></li>`).join("")}</ol>`
     : "<p>Nothing critical or high.</p>"}</div>
   ${areaRows ? `<div class="card"><h2>Risk by area</h2><table><thead><tr><th>Area</th>${RISK_KEYS.map((k) => `<th class="num">${RISK[k].label}</th>`).join("")}</tr></thead><tbody>${areaRows}</tbody></table></div>` : ""}
-  ${r.profile === "credentials" ? "" : `<div class="card"><h2>Where your data goes</h2>${flows
+  ${r.language !== "n8n" || r.profile === "credentials" ? "" : `<div class="card"><h2>Where your data goes</h2>${flows
     ? `<table><thead><tr><th>Service</th><th>Data</th><th>Node</th><th>Used as</th><th>Detail</th></tr></thead><tbody>${flows}</tbody></table>`
     : "<p>No external services detected.</p>"}</div>`}
   <div class="card"><h2>All findings (${findings.length})</h2>${findingSections || "<p>No issues found by the current rule set.</p>"}</div>
-  <footer>Generated by n8n Workflow Scanner. ${el.includeSecrets.checked
+  <footer>Generated by Security Scanner. ${el.includeSecrets.checked
     ? "<b>This report contains exposed secret values. Share it only with people allowed to see them, and rotate the secrets.</b>"
-    : "Secret values are masked."} Line numbers refer to the workflow formatted with 2-space indentation.</footer>
+    : "Secret values are masked."} ${r.language === "n8n" ? "Line numbers refer to the workflow formatted with 2-space indentation." : "Line numbers refer to the scanned file."}</footer>
 </main></body></html>`;
   }
 
@@ -669,11 +805,11 @@
     const v = verdictFor(r.summary);
     const cell = (s) => String(s ?? "").replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
     const lines = [
-      `# Security report: ${r.workflow_name || "Untitled workflow"}`,
+      `# Security report: ${reportName(r)}`,
       "",
       `**Overall risk: ${v.label}.** ${v.text}`,
       "",
-      `${PROFILE_LABEL[r.profile] || "All checks"} · ${plural(r.node_count, "node")} · scanned ${scannedAt.toLocaleString()} · Semgrep ${r.semgrep_version}`,
+      `${reportScope(r)} · ${PROFILE_LABEL[r.profile] || "All checks"} · scanned ${scannedAt.toLocaleString()} · Semgrep ${r.semgrep_version}`,
       "",
       `| ${RISK_KEYS.map((k) => RISK[k].label).join(" | ")} |`,
       `|${RISK_KEYS.map(() => ":---:").join("|")}|`,
@@ -683,10 +819,10 @@
       "",
     ];
     const top = r.findings.filter((f) => f.risk === "critical" || f.risk === "high").slice(0, TOP_PRIORITIES);
-    if (top.length) top.forEach((f, i) => lines.push(`${i + 1}. **[${RISK[f.risk].label}] ${f.title}** · ${nodeLabel(f)}`));
+    if (top.length) top.forEach((f, i) => lines.push(`${i + 1}. **[${RISK[f.risk].label}] ${f.title}** · ${locationLabel(f)}`));
     else lines.push("Nothing critical or high.");
 
-    if (r.profile !== "credentials") {
+    if (r.language === "n8n" && r.profile !== "credentials") {
       lines.push("", "## Where your data goes", "");
       if ((r.data_flows || []).length) {
         lines.push("| Service | Data | Node | Used as | Detail |", "|---|---|---|---|---|");
@@ -705,7 +841,7 @@
           "",
           `_${f.brief}_`,
           "",
-          `- **Where:** ${nodeLabel(f)}, lines ${f.start_line}–${f.end_line}`,
+          `- **Where:** ${locationLabel(f)}${r.language === "n8n" ? `, lines ${f.start_line}–${f.end_line}` : ""}`,
           ...(f.exposed_value ? [`- **Exposed value:** \`${f.exposed_value.replace(/`/g, "'").replace(/\s*\n\s*/g, " ")}\``] : []),
           `- **What's wrong:** ${f.message}`,
           `- **How to fix:** ${f.remediation}`,
@@ -726,26 +862,24 @@
   // ------------------------------------------------------------------ input
   async function loadSample() {
     clearError();
-    const file = el.sample.value;
-    el.sample.value = "";
-    if (!/^[\w-]+\.json$/.test(file)) return;
+    if (!language?.sample) return;
     try {
-      const res = await fetch(`/static/samples/${file}`);
+      const res = await fetch(`/static/samples/${language.sample}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      formatInput(await res.json());
+      let text = await res.text();
+      if (language.id === "n8n") text = JSON.stringify(JSON.parse(text), null, 2) + "\n";
+      setEditorText(text);
+      setFileName(language.sample.split("/").pop());
+      el.detectNote.classList.add("hidden");
     } catch (err) {
       showError(`Could not load sample: ${err.message}`);
     }
   }
 
-  /** Read a local .json file into the editor (in the browser), then scan it. */
+  /** Read a local file into the editor (in the browser), pick its language, then scan. */
   async function loadFile(file) {
     clearError();
     if (!file) return;
-    if (!/\.json$/i.test(file.name) && file.type !== "application/json") {
-      showError(`"${file.name}" is not a .json file.`);
-      return;
-    }
     if (file.size > MAX_BYTES) {
       showError(`"${file.name}" is ${formatBytes(file.size)}; the limit is ${formatBytes(MAX_BYTES)}.`);
       return;
@@ -757,10 +891,14 @@
       showError(`Could not read "${file.name}": ${err.message}`);
       return;
     }
-    el.input.value = text;
-    updateMeta();
-    el.fileName.textContent = `${file.name} · ${formatBytes(file.size)}`;
-    el.fileName.classList.remove("hidden");
+    if (text.includes("\u0000")) {
+      showError(`"${file.name}" looks like a binary file. Only text files (source code, config, JSON) can be scanned.`);
+      return;
+    }
+    const detected = detectLanguage(file.name, text);
+    selectLanguage(detected, { detectedFrom: file.name });
+    setEditorText(text);
+    setFileName(file.name);
     await scan();
   }
 
@@ -776,24 +914,23 @@
       const health = await res.json();
       el.engine.textContent = `Semgrep ${health.semgrep_version} · ${health.rules_loaded} rules`;
       el.engine.classList.remove("hidden");
+      el.statRules.textContent = String(health.rules_loaded);
     } catch { /* status badge is optional */ }
   }
 
   // ----------------------------------------------------------------- wiring
   el.scan.addEventListener("click", scan);
-  el.sample.addEventListener("change", loadSample);
+  el.sample.addEventListener("click", loadSample);
   el.format.addEventListener("click", () => {
     clearError();
-    const data = parseInput();
-    if (data) formatInput(data);
+    const data = parseWorkflow(el.input.value);
+    if (data) setEditorText(JSON.stringify(data, null, 2) + "\n");
   });
   el.clear.addEventListener("click", () => {
-    clearHighlight();
-    el.input.value = "";
-    el.fileName.textContent = "";
-    el.fileName.classList.add("hidden");
-    updateMeta();
+    setEditorText("");
+    setFileName(null);
     clearError();
+    el.detectNote.classList.add("hidden");
     el.input.focus();
   });
   el.groupBy.addEventListener("change", () => lastResult && renderFindings());
@@ -833,7 +970,7 @@
     setDropActive(false);
     const files = e.dataTransfer?.files;
     if (files && files.length > 1) {
-      showError("Drop one workflow file at a time.");
+      showError("Drop one file at a time.");
       return;
     }
     loadFile(files?.[0]);
@@ -855,5 +992,6 @@
   });
 
   updateMeta();
+  loadLanguages();
   loadEngineStatus();
 })();

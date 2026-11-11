@@ -1,7 +1,7 @@
 """PDF version of a scan report, built with ReportLab.
 
-The PDF contains only the findings (never the workflow JSON or code
-excerpts), grouped Critical -> High -> Medium -> Low. Each finding shows:
+The PDF contains only the findings (never the scanned workflow / source or
+code excerpts), grouped Critical -> High -> Medium -> Low. Each finding shows:
   * its severity, title and the line number(s) it comes from
   * a one-sentence brief
   * how to fix it
@@ -106,11 +106,25 @@ def verdict(summary) -> tuple[str, str, str]:
         return "medium", "Moderate risk", f"No critical or high issues. Review {plural(m, 'medium issue')}."
     if summary.total:
         return "low", "Low risk", "Only minor findings. Review them when convenient."
-    return "none", "No issues found", "The rule set found nothing. Still review the workflow manually before deploying."
+    return "none", "No issues found", "The rule set found nothing. Still review it manually before deploying."
 
 
 def _lines(f: Finding) -> str:
     return f"Line {f.start_line}" if f.start_line == f.end_line else f"Lines {f.start_line}-{f.end_line}"
+
+
+AREA_LABELS = {
+    "secrets": "Secrets",
+    "ai-agent": "AI agents",
+    "integrations": "Integrations",
+    "injection": "Injection",
+    "code-execution": "Code execution",
+    "crypto": "Cryptography",
+    "configuration": "Configuration",
+    "access-control": "Access control",
+    "transport": "Transport",
+    "data-exposure": "Data exposure",
+}
 
 
 def _node(f: Finding) -> str:
@@ -156,7 +170,11 @@ class _NumberedCanvas(pdf_canvas.Canvas):
 
 def build_pdf(result: ScanResponse, include_secrets: bool = False, scanned_at: datetime | None = None) -> bytes:
     scanned_at = scanned_at or datetime.now(timezone.utc)
-    name = result.workflow_name or "Untitled workflow"
+    is_workflow = result.node_count is not None
+    name = result.target_name or result.workflow_name or (
+        "Untitled workflow" if is_workflow else f"{result.language_label} file")
+    scope = (f"n8n workflow · {result.node_count} nodes" if is_workflow
+             else f"{result.language_label} · {result.line_count} lines")
     findings = sorted(result.findings, key=lambda f: (RISK_ORDER.index(f.risk), f.start_line, f.rule_id))
     number = {id(f): i for i, f in enumerate(findings, start=1)}
 
@@ -164,11 +182,11 @@ def build_pdf(result: ScanResponse, include_secrets: bool = False, scanned_at: d
 
     # ---------------------------------------------------------------- header
     story += [
-        Paragraph("Workflow security report", S["title"]),
+        Paragraph("Security report", S["title"]),
         Spacer(1, 2 * mm),
         Paragraph(_safe(name), S["subtitle"]),
         Paragraph(
-            _safe(f"Scanned {scanned_at.strftime('%d %b %Y, %H:%M UTC')} · {result.node_count} nodes · "
+            _safe(f"Scanned {scanned_at.strftime('%d %b %Y, %H:%M UTC')} · {scope} · "
                   f"{'Credentials only' if result.profile == 'credentials' else 'All checks'}"),
             S["small"],
         ),
@@ -207,18 +225,18 @@ def build_pdf(result: ScanResponse, include_secrets: bool = False, scanned_at: d
     story += [counts, Spacer(1, 7 * mm)]
 
     if not findings:
-        story.append(Paragraph("No issues were found by the current rule set. Still review the workflow manually before deploying.", S["body"]))
+        story.append(Paragraph("No issues were found by the current rule set. Still review it manually before deploying.", S["body"]))
         return _render(story, name, scanned_at)
 
     # ------------------------------------------------------------ at a glance
     story.append(Paragraph("At a glance", S["h2"]))
-    rows = [[Paragraph(h, S["th"]) for h in ("#", "SEVERITY", "ISSUE", "WHERE", "LINE")]]
+    rows = [[Paragraph(h, S["th"]) for h in ("#", "SEVERITY", "ISSUE", "NODE" if is_workflow else "AREA", "LINE")]]
     for f in findings:
         rows.append([
             Paragraph(str(number[id(f)]), S["td"]),
             Paragraph(SEVERITY[f.risk][0].upper(), S["td_badge"]),
             Paragraph(_safe(f.title), S["td"]),
-            Paragraph(_safe(f.node_name or "Workflow-level"), S["td"]),
+            Paragraph(_safe((f.node_name or "Workflow-level") if is_workflow else AREA_LABELS.get(f.category, f.category)), S["td"]),
             Paragraph(_safe(_lines(f).replace("Lines ", "").replace("Line ", "")), S["td"]),
         ])
     glance = Table(rows, colWidths=[9 * mm, 21 * mm, 80 * mm, CONTENT_W - 135 * mm, 25 * mm], repeatRows=1)
@@ -249,14 +267,16 @@ def build_pdf(result: ScanResponse, include_secrets: bool = False, scanned_at: d
             ("ROUNDEDCORNERS", [4, 4, 4, 4]),
         ]))
         # Keep the heading with the first card.
-        story.append(KeepTogether([heading, Spacer(1, 3 * mm), _card(group[0], number[id(group[0])], include_secrets)]))
+        location = None if is_workflow else f"File: {name}"
+        story.append(KeepTogether([heading, Spacer(1, 3 * mm), _card(group[0], number[id(group[0])], include_secrets, location)]))
         story.append(Spacer(1, 4 * mm))
         for f in group[1:]:
-            story += [_card(f, number[id(f)], include_secrets), Spacer(1, 4 * mm)]
+            story += [_card(f, number[id(f)], include_secrets, location), Spacer(1, 4 * mm)]
         story.append(Spacer(1, 3 * mm))
 
     story.append(Paragraph(
-        "Line numbers refer to the workflow as formatted in the scanner editor (2-space indentation). "
+        ("Line numbers refer to the workflow as formatted in the scanner editor (2-space indentation). " if is_workflow
+         else "Line numbers refer to the scanned file. ")
         + ("This report contains exposed secret values: share it only with people allowed to see them, and rotate those secrets."
            if include_secrets else "Secret values are not included in this report."),
         S["small"],
@@ -264,7 +284,7 @@ def build_pdf(result: ScanResponse, include_secrets: bool = False, scanned_at: d
     return _render(story, name, scanned_at)
 
 
-def _card(f: Finding, n: int, include_secrets: bool) -> Table:
+def _card(f: Finding, n: int, include_secrets: bool, location: str | None = None) -> Table:
     """One finding. A single-row Table never splits across pages."""
     label, color, _bg = SEVERITY[f.risk]
     inner_w = CONTENT_W - 4 * mm  # minus the coloured stripe
@@ -282,7 +302,7 @@ def _card(f: Finding, n: int, include_secrets: bool) -> Table:
 
     rows: list = [
         [head],
-        [Paragraph(_safe(f"Node: {_node(f)}"), S["small"])],
+        [Paragraph(_safe(location or f"Node: {_node(f)}"), S["small"])],
         [Paragraph("IN BRIEF", S["label"])],
         [Paragraph(_safe(f.brief), S["brief"])],
     ]
@@ -326,10 +346,10 @@ def _render(story: list, workflow_name: str, scanned_at: datetime) -> bytes:
     doc = SimpleDocTemplate(
         buffer, pagesize=A4,
         leftMargin=MARGIN, rightMargin=MARGIN, topMargin=MARGIN, bottomMargin=MARGIN,
-        title=f"Security report - {workflow_name}", author="n8n Workflow Scanner",
-        subject="n8n workflow security findings",
+        title=f"Security report - {workflow_name}", author="Workflow & Code Security Scanner",
+        subject="Security findings",
     )
     header = _plain(f"Security report - {workflow_name}")[:110]
-    generated = f"Generated by n8n Workflow Scanner · {scanned_at.strftime('%d %b %Y')}"
+    generated = f"Generated by Workflow & Code Security Scanner · {scanned_at.strftime('%d %b %Y')}"
     doc.build(story, canvasmaker=lambda *a, **kw: _NumberedCanvas(*a, header=header, generated=generated, **kw))
     return buffer.getvalue()

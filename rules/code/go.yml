@@ -1,0 +1,92 @@
+rules:
+  - id: go-command-injection
+    languages: [go]
+    severity: ERROR
+    message: A shell is started with a non-constant command string.
+    patterns:
+      - pattern-either:
+          - pattern: exec.Command($SH, "-c", $CMD, ...)
+          - pattern: exec.CommandContext($CTX, $SH, "-c", $CMD, ...)
+      - metavariable-regex:
+          metavariable: $SH
+          regex: ^"(/bin/)?(sh|bash|zsh)"$
+      - pattern-not: exec.Command($SH, "-c", "...")
+      - pattern-not: exec.CommandContext($CTX, $SH, "-c", "...")
+    metadata:
+      title: Command injection risk
+      brief: "Data is inserted into a shell command, so an attacker could run their own commands."
+      risk: high
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Call exec.Command with the program and separate, validated arguments; do not use sh -c.
+
+  - id: go-sql-injection
+    languages: [go]
+    severity: ERROR
+    message: A SQL query is built with fmt.Sprintf or concatenation.
+    patterns:
+      - pattern-either:
+          - pattern: $DB.$M($A + $B, ...)
+          - pattern: $DB.$M(fmt.Sprintf(...), ...)
+          - pattern: $DB.$M($CTX, $A + $B, ...)
+          - pattern: $DB.$M($CTX, fmt.Sprintf(...), ...)
+      - metavariable-regex:
+          metavariable: $M
+          regex: ^(Query|QueryRow|Exec|QueryContext|QueryRowContext|ExecContext|Prepare|PrepareContext|Raw|Select|Get)$
+    metadata:
+      title: SQL injection risk
+      brief: "A database query is built by joining text, letting an attacker read or change data."
+      risk: high
+      category: injection
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Use placeholders, e.g. db.Query("SELECT * FROM users WHERE id = $1", id).
+
+  - id: go-tls-insecure-skip-verify
+    languages: [go]
+    severity: ERROR
+    message: InsecureSkipVerify disables certificate verification.
+    pattern: 'tls.Config{..., InsecureSkipVerify: true, ...}'
+    metadata:
+      title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Remove InsecureSkipVerify; add private CAs to tls.Config.RootCAs instead.
+
+  - id: go-weak-hash
+    languages: [go]
+    severity: WARNING
+    message: MD5 / SHA-1 is used.
+    pattern-either:
+      - pattern: md5.New()
+      - pattern: md5.Sum(...)
+      - pattern: sha1.New()
+      - pattern: sha1.Sum(...)
+    metadata:
+      title: Weak hash algorithm (MD5 / SHA-1)
+      brief: "MD5 or SHA-1 is used, which attackers can break or forge."
+      risk: medium
+      category: crypto
+      cwe: "CWE-328: Use of Weak Hash"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use crypto/sha256, and bcrypt / argon2 for passwords.
+
+  - id: go-unescaped-template-html
+    languages: [go]
+    severity: WARNING
+    message: template.HTML() marks non-constant data as safe HTML.
+    patterns:
+      - pattern: template.HTML($X)
+      - pattern-not: template.HTML("...")
+    metadata:
+      title: Cross-site scripting (unescaped HTML)
+      brief: "Data is marked as safe HTML, letting an attacker inject scripts into the page."
+      risk: medium
+      category: injection
+      cwe: "CWE-79: Cross-site Scripting"
+      owasp: "A03:2021 - Injection"
+      remediation: Pass plain strings to html/template so they are escaped automatically.

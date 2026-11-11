@@ -1,0 +1,56 @@
+rules:
+  - id: bash-curl-pipe-shell
+    languages: [bash]
+    severity: ERROR
+    message: A script downloaded from the network is piped straight into a shell.
+    pattern-regex: \b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z|da)?sh\b
+    metadata:
+      title: Remote script piped to shell
+      brief: "A script is downloaded and run without any check, so a compromised server could run anything."
+      risk: high
+      category: code-execution
+      cwe: "CWE-494: Download of Code Without Integrity Check"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: Download to a file, verify its checksum or signature, then run it; or use a package manager.
+
+  - id: bash-tls-verification-disabled
+    languages: [bash]
+    severity: ERROR
+    message: curl -k / --insecure or wget --no-check-certificate disables TLS verification.
+    pattern-regex: \b(curl\b[^\n]*\s(-k|--insecure)\b|wget\b[^\n]*--no-check-certificate)
+    metadata:
+      title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Remove -k / --no-check-certificate; pass --cacert for private CAs.
+
+  - id: bash-eval-variable
+    languages: [bash]
+    severity: WARNING
+    message: eval runs the contents of a variable as a command.
+    pattern-regex: (?m)^\s*eval\s+["']?\$
+    metadata:
+      title: eval of variable data
+      brief: "eval runs text as a command, so unexpected input can execute anything."
+      risk: medium
+      category: code-execution
+      cwe: "CWE-95: Eval Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Avoid eval; use arrays for commands and case statements for dispatch.
+
+  - id: bash-world-writable
+    languages: [bash]
+    severity: WARNING
+    message: Files are made writable by every user (chmod 777 / a+w).
+    pattern-regex: \bchmod\s+(-R\s+)?(0?777|666|a\+w|o\+w|a\+rwx)\b
+    metadata:
+      title: World-writable permissions
+      brief: "Files are made writable by every user on the system, allowing tampering."
+      risk: medium
+      category: configuration
+      cwe: "CWE-732: Incorrect Permission Assignment for Critical Resource"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Grant the minimum permissions needed (e.g. 750 / 640) and set the right owner.

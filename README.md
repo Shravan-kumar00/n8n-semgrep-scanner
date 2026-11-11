@@ -1,13 +1,17 @@
-# n8n Workflow Security Scanner
+# Workflow & Code Security Scanner
 
-Paste or upload an n8n workflow export in a web UI and get a readable security report. The scanner looks for:
+One place to scan **n8n workflows, source code and infrastructure files** for security problems. Upload or paste a file in the web UI (or call the API) and get a readable report with a verdict, what to fix first, and a plain-English fix for every finding. You can download it as a PDF, HTML, Markdown or JSON.
 
-- hardcoded secrets and leaked credentials
-- AI agent data-leak risks: prompt injection leading to data exfiltration, agents that reveal private data, over-powered tools, shared memory and secrets in prompts
-- risky Microsoft Outlook, Teams and monday.com usage: hidden BCC, whole records forwarded, unauthenticated endpoints that read or write them, exposed Teams webhook URLs
-- command and SQL injection through expressions, risky Code-node APIs, disabled TLS verification and unauthenticated webhooks
+| Group | Languages / formats | What it looks for |
+|---|---|---|
+| Automation | **n8n workflows** | Leaked credentials, AI agent data leaks (prompt injection, public agents, shared memory), Outlook / Teams / monday.com risks, injection, TLS, unauthenticated webhooks, plus a data-flow inventory |
+| Application code | **Python, JavaScript, TypeScript, Java, Go, C#, PHP, Ruby** | Hardcoded secrets, command / SQL / code injection, XSS, unsafe deserialisation, disabled TLS checks, weak crypto, JWT misuse, debug mode, CSRF / CORS misconfiguration |
+| Infrastructure & config | **Shell scripts, Dockerfiles, YAML (Kubernetes, Docker Compose, GitHub Actions), Terraform** | Secrets in config and images, `curl \| sh`, root and privileged containers, Docker socket mounts, CI script injection, public buckets, open firewalls, wildcard IAM, unencrypted storage |
+| Other | **Any text file** (`.env`, `.properties`, `.ini`, `.toml`, `.xml`, …) | Leaked passwords, tokens, API keys, private keys, connection strings and credentials in URLs |
 
-Each finding explains what's wrong and how to fix it, and names the node it was found in. The report also lists every external service the workflow sends data to, including AI model providers.
+The language is detected automatically from the uploaded file name, and you can change it with the picker. All rules are local: nothing is downloaded from the Semgrep registry, and scanned content never leaves the server.
+
+> **A first line of review, not a replacement for one.** The scanner catches known patterns quickly and consistently. It does not understand business context and cannot find every vulnerability. Use it to point reviewers at the riskiest areas, and keep your normal security review and approval process.
 
 ```
 n8n-semgrep-scanner/
@@ -15,22 +19,27 @@ n8n-semgrep-scanner/
 │   ├── __init__.py
 │   ├── config.py        # env-driven settings (limits, timeouts, paths)
 │   ├── models.py        # Pydantic request/response schemas
-│   ├── workflow.py      # JSON validation, normalization, line -> node index
+│   ├── languages.py     # supported languages: extensions, rule files, samples
+│   ├── workflow.py      # n8n JSON validation, normalization, line -> node index
 │   ├── scanner.py       # temp file handling, semgrep subprocess, result parsing
 │   ├── graph.py         # connection-graph checks (AI agents, endpoints) + data-flow inventory
 │   ├── pdf_report.py    # PDF report (ReportLab): findings only, grouped by severity
 │   └── main.py          # FastAPI app, routes, body-size limit, security headers
 ├── rules/
-│   └── n8n-security.yml # 28 Semgrep rules for n8n workflow JSON
+│   ├── n8n/             # 28 rules for n8n workflow JSON
+│   ├── code/            # one rule file per language (python.yml, java.yml, terraform.yml, …)
+│   └── common/          # secret detection shared by all code / config languages
 ├── static/
 │   ├── index.html       # Tailwind single-page UI
 │   ├── app.js           # submit, report rendering, HTML / Markdown / JSON export
-│   └── samples/         # vulnerable-workflow.json, ai-agents-m365-workflow.json
+│   └── samples/         # n8n samples + code/ (one intentionally vulnerable file per language)
 ├── tests/
-│   ├── fixtures/credential-cases.json  # credential leaks that must / must not be flagged
+│   ├── fixtures/credential-cases.json  # n8n credential leaks that must / must not be flagged
+│   ├── fixtures/safe/   # safe file per language: must produce no findings
 │   ├── test_workflow.py # parser/normalizer unit tests
 │   ├── test_graph.py    # connection-graph analysis unit tests
 │   ├── test_pdf.py      # PDF report endpoint tests
+│   ├── test_languages.py # every language: sample fully detected, safe file clean
 │   └── test_api.py      # end-to-end tests against real semgrep
 ├── Dockerfile
 ├── docker-compose.yml
@@ -46,7 +55,7 @@ n8n-semgrep-scanner/
 docker compose up --build -d
 ```
 
-Open http://localhost:8000, pick a workflow from **Load sample…** and click **Scan Workflow**.
+Open http://localhost:8000, pick a language, click **Load sample** and then **Scan**.
 
 After changing code or rules, rebuild the running container:
 
@@ -66,7 +75,12 @@ pytest
 ## Using the UI
 
 - **Editor:** shows line numbers. **Show line N in editor** on a finding scrolls to that line, highlights it and puts the cursor there. Lines don't wrap, so the numbers always match the report.
-- **Input:** paste JSON, click **Upload .json**, or drag a `.json` file onto the editor. An uploaded file is read in the browser, placed in the editor and scanned straight away. The 2 MB limit is checked before reading.
+- **Step 1, What are you scanning?** Pick n8n workflow, a programming language, an infrastructure format, or *Other text file*.
+- **Step 2, Add your file:** paste text, click **Upload file**, or drag a file onto the editor.
+  - An uploaded file is read in the browser and its language is detected from the file name: `.py`, `Dockerfile`, `.tf`, `.env`, and so on. A `.json` file is treated as an n8n workflow when it has a `nodes` array.
+  - The file is then scanned straight away.
+  - Binary files and files over 2 MB are rejected before upload.
+- **Line numbers:** for code, line numbers are those of your file. n8n workflows are formatted first (2-space JSON) so that lines map to nodes.
 - **Scan mode:**
   - **All checks** runs every rule.
   - **Credentials only** reports just leaked secrets: hardcoded passwords, tokens, API keys, Bearer/Basic values, connection-string passwords and credentials in URLs.
@@ -81,23 +95,23 @@ pytest
 | **Severity tiles** | Counts per severity; click one to filter the findings |
 | **Fix these first** | The top 5 critical / high issues; click one to jump to it |
 | **Risk by area** | Secrets, AI agents, Outlook/Teams/monday.com, injection, …; click one to filter |
-| **Where your data goes** | Every external service the workflow sends to, reads from or receives from: LLM providers, Microsoft 365, monday.com, HTTP hosts. Each row names the node and whether it's an AI tool, AI model, trigger or normal step |
-| **All findings** | Grouped by area, severity or node. Each one has *What's wrong* and *How to fix*, plus technical details: masked code excerpt, line numbers, rule id, CWE / OWASP. Secret findings also show the **Exposed value**: the exact hardcoded password, token, header value, connection-string password or URL |
+| **Where your data goes** *(n8n only)* | Every external service the workflow sends to, reads from or receives from: LLM providers, Microsoft 365, monday.com, HTTP hosts. Each row names the node and whether it's an AI tool, AI model, trigger or normal step |
+| **All findings** | Grouped by area, severity or node (n8n). Each one has *What's wrong* and *How to fix*, plus technical details: masked code excerpt, line numbers, rule id, CWE / OWASP. Secret findings also show the **Exposed value**: the exact hardcoded password, token, header value, connection-string password or URL |
 
 ### PDF report
 
-**Download PDF** gives a printable report of the findings only. It never includes the workflow JSON or code excerpts.
+**Download PDF** gives a printable report of the findings only. It never includes the scanned workflow, the source code or code excerpts.
 
-- **Page 1:** the overall verdict, severity counts and an *At a glance* table (#, severity, issue, node, line).
+- **Page 1:** the overall verdict, severity counts and an *At a glance* table (#, severity, issue, node or area, line).
 - **Then one section per severity**, in the order Critical, High, Medium, Low. Each finding is a card with:
   - a colour-coded **severity** badge and stripe
-  - the **error title** and the **line number(s)** it comes from, plus the node name
+  - the **error title** and the **line number(s)** it comes from, plus the node name (n8n) or file name (code)
   - **In brief:** what's wrong in one plain-English sentence
   - **How to fix**, in a green box
   - the **Exposed value**, only if *Include exposed values in downloads* is ticked
 - **Every page** has a header, a footer and *Page X of Y*.
 
-The server scans the workflow again to build the PDF (`POST /api/report.pdf`), so the report always matches the rules rather than anything the browser sends.
+The server scans the file again to build the PDF (`POST /api/report.pdf`), so the report always matches the rules rather than anything the browser sends.
 
 ### Other downloads
 
@@ -107,31 +121,59 @@ Downloads leave out exposed values unless you tick **Include exposed values in d
 
 ## API
 
+`GET /api/languages` lists the supported languages: id, label, group, file extensions and names, rule count and sample file.
+
 `POST /api/scan` with `Content-Type: application/json`:
 
 ```json
-{ "workflow": "{\"name\":\"My flow\",\"nodes\":[...],\"connections\":{}}", "profile": "full" }
+{ "content": "import os\nos.system(cmd)\n", "language": "python", "filename": "app.py", "profile": "full" }
 ```
 
-`profile` is optional: `"full"` (default) or `"credentials"` (only findings whose rule has `metadata.category: secrets`).
+- `language` is an id from `/api/languages` (`n8n`, `python`, `javascript`, `typescript`, `java`, `go`, `csharp`, `php`, `ruby`, `bash`, `dockerfile`, `yaml`, `terraform`, `generic`). It defaults to `n8n`.
+- `filename` is optional. Only its extension is used (for example `.tsx` vs `.ts`), and it is shown in reports; it is never used as a path.
+- `profile` is optional: `"full"` (default) or `"credentials"` (only findings whose rule has `metadata.category: secrets`).
+- The original n8n form `{"workflow": "<json>"}` still works.
 
-The response contains `summary` (counts per severity), `findings[]` and `data_flows[]` (empty in credentials mode). Each finding has `rule_id`, `title`, `brief` (one sentence), `risk`, `category`, `message`, `remediation`, `cwe`, `owasp`, `node_name`, `start_line`/`end_line`, `snippet`, `exposed_value` (secrets only, unmasked) and `source`. `source` is `semgrep` for pattern rules or `workflow-graph` for connection checks; for connection checks, `snippet` lists the evidence. Line numbers refer to the workflow pretty-printed with a 2-space indent; the UI reformats the text area to that layout, so **Line N** links jump to the right place.
+The response contains `language`, `target_name` (file or workflow name), `line_count`, `node_count` (n8n only), `summary` (counts per severity), `findings[]` and `data_flows[]` (n8n only; empty in credentials mode). Each finding has `rule_id`, `title`, `brief` (one sentence), `risk`, `category`, `message`, `remediation`, `cwe`, `owasp`, `node_name`, `start_line`/`end_line`, `snippet`, `exposed_value` (secrets only, unmasked) and `source`. `source` is `semgrep` for pattern rules or `workflow-graph` for connection checks; for connection checks, `snippet` lists the evidence. For code, line numbers are those of the submitted file. For n8n, they refer to the workflow pretty-printed with a 2-space indent; the UI reformats the editor to that layout, so **Line N** links jump to the right place.
 
 | Status | Meaning |
 |---|---|
 | 413 | Body larger than `MAX_PAYLOAD_BYTES` |
 | 415 | Not `application/json` |
-| 422 | Invalid JSON / not an n8n workflow |
+| 422 | Invalid request, unknown language, binary content, or invalid n8n JSON |
 | 429 | All scan slots busy (`Retry-After: 5`) |
 | 504 | Semgrep exceeded `SCAN_TIMEOUT_SECONDS` |
 
 `POST /api/report.pdf` takes the same body plus an optional `"include_secrets": true` and returns the PDF report as an attachment.
 
-`GET /api/health` returns the Semgrep version and the number of rules loaded.
+`GET /api/health` returns the Semgrep version, the number of rules loaded and the number of languages.
 
 ## Rules
 
-### Secrets, injection and configuration
+### Source code and infrastructure
+
+Each language runs its own rule file in `rules/code/` plus the shared secret rules in `rules/common/`. Config-style formats (shell, YAML and other text) also get `config-secrets.yml`, which catches unquoted values such as `PASSWORD=abc`.
+
+| Language | Rules | Detects |
+|---|---|---|
+| All code / config | `common/secrets.yml` | Known provider keys (AWS, GitHub, GitLab, Slack, Stripe, OpenAI / Anthropic, Google, SendGrid, npm), private keys, JWTs, Slack / Teams webhooks, `password = "…"`-style literals, `Password=…;` connection strings, credentials in URLs |
+| Python | `code/python.yml` | `os.system` / `shell=True` injection, SQL built with `%` / f-strings / `+`, `eval` / `exec`, pickle / unsafe YAML, `verify=False`, JWT without signature check, MD5 / SHA-1, debug mode, `tempfile.mktemp` |
+| JavaScript / TypeScript | `code/javascript.yml` | `child_process.exec` injection, SQL via concatenation / template literals, `eval` / `new Function`, `rejectUnauthorized: false`, `innerHTML` / `dangerouslySetInnerHTML`, hardcoded JWT secret, MD5 / SHA-1, CORS `*`, node-serialize |
+| Java | `code/java.yml` | `Runtime.exec` / `sh -c` injection, JDBC / JPA string concatenation, `ObjectInputStream` / `XMLDecoder`, trust-all TrustManager / hostname verifier, MD5 / SHA-1 / DES / ECB, Spring CSRF disabled |
+| Go | `code/go.yml` | `sh -c` injection, `fmt.Sprintf` SQL, `InsecureSkipVerify`, MD5 / SHA-1, `template.HTML` |
+| C# | `code/csharp.yml` | `Process.Start` injection, `SqlCommand` / `FromSqlRaw` concatenation and interpolation, `BinaryFormatter` / `TypeNameHandling`, certificate validation bypass, MD5 / SHA-1 / DES |
+| PHP | `code/php.yml` | `exec` / `system` / `shell_exec` injection, `eval`, `mysqli_query` concatenation, `unserialize`, file inclusion from request, unescaped `echo $_GET`, cURL without SSL verify, `md5` / `sha1` |
+| Ruby | `code/ruby.yml` | `system` / backtick injection, `eval`, interpolated ActiveRecord SQL, `Marshal.load` / unsafe YAML, `VERIFY_NONE`, MD5 / SHA-1, `params.permit!` |
+| Shell | `code/bash.yml` | `curl … \| sh`, `curl -k` / `--no-check-certificate`, `eval "$var"`, `chmod 777` |
+| Dockerfile | `code/dockerfile.yml` | No `USER` / `USER root`, secrets in `ENV` / `ARG`, `:latest`, `curl \| sh` in `RUN`, `ADD` from a URL |
+| YAML | `code/yaml.yml` | Privileged containers, host network / PID / IPC, root or privilege escalation, Docker socket mounts, GitHub Actions script injection and `write-all` permissions |
+| Terraform | `code/terraform.yml` | Public buckets, `0.0.0.0/0` ingress, wildcard IAM actions, publicly accessible databases, encryption disabled |
+
+Every language has an intentionally vulnerable sample in `static/samples/code/` and a safe counterpart in `tests/fixtures/safe/`. `tests/test_languages.py` checks that every rule fires on the sample and that nothing fires on the safe file. When you add a rule, add a case to both.
+
+These rules are pattern based: they flag risky code, they don't trace whether the data really comes from a user. Treat a finding as "review this line", not as proof of an exploit.
+
+### n8n: secrets, injection and configuration
 
 | Rule | Risk | Detects |
 |---|---|---|
@@ -152,7 +194,7 @@ The response contains `summary` (counts per severity), `findings[]` and `data_fl
 | `n8n-pinned-data-exported` | low | `pinData` included in the export |
 | `n8n-teams-webhook-url-exposed` | high | Teams incoming-webhook / Power Automate workflow URLs (the URL is the credential) |
 
-### AI agents
+### n8n: AI agents
 
 The checks marked *graph* follow the workflow's connections (in `app/graph.py`) rather than matching a single node. An agent's **untrusted input** is any of these:
 
@@ -174,7 +216,7 @@ The checks marked *graph* follow the workflow's connections (in `app/graph.py`) 
 | `n8n-ai-tool-destructive-operation` | medium | Agent tool that deletes, archives or moves data |
 | `n8n-ai-intermediate-steps-exposed` | low | `returnIntermediateSteps` returns raw tool output |
 
-### Microsoft Outlook, Teams and monday.com
+### n8n: Microsoft Outlook, Teams and monday.com
 
 | Check | Risk | Detects |
 |---|---|---|
@@ -187,7 +229,7 @@ The checks marked *graph* follow the workflow's connections (in `app/graph.py`) 
 
 The rule ids and parameter names follow n8n's Outlook v2, Teams v2, monday.com v1 and AI Agent (LangChain) nodes. Older node versions may use different parameter names; if a known issue in your workflows isn't flagged, send a sanitised export so a case can be added.
 
-### Notes on the secrets rules
+### n8n: notes on the secrets rules
 
 All the rules in the `secrets` category skip the following, so they aren't reported. These are `n8n-known-secret-format`, `n8n-hardcoded-secret-*`, `n8n-literal-authorization-token`, `n8n-credentials-in-url` and `n8n-teams-webhook-url-exposed`.
 
@@ -199,15 +241,15 @@ Credentials stored in n8n's credential store never appear in a workflow export; 
 
 `tests/fixtures/credential-cases.json` holds the positive and negative cases these rules are tuned against. Add a case there whenever you change a secrets rule.
 
-To add a rule, add an entry to `rules/n8n-security.yml` with `metadata.title`, `risk`, `category` and `remediation`, then add a case to the sample or tests. Two things about Semgrep's JSON support are easy to get wrong:
+To add a rule, add an entry to the right file under `rules/` with `metadata.title`, `brief`, `risk`, `category` and `remediation`, then add a case to the sample and tests. Two things about Semgrep's JSON support (n8n rules) are easy to get wrong:
 
 - A metavariable bound to a JSON key includes the quotes.
 - `metavariable-regex` only matches from the start of the value, so use `(?s).*foo` to find `foo` anywhere in it.
 
 ## Security design
 
-- **Input handling:** the body size is capped while it streams in, before any parsing. The JSON is parsed strictly (no `NaN`, depth-guarded, must contain a `nodes` array) and re-serialized, so Semgrep only ever sees well-formed JSON.
-- **Temporary files:** each scan writes to its own `mkdtemp` directory (0700) as a 0600 file opened with `O_EXCL`. The directory is deleted when the scan ends, whether it succeeds, fails or times out.
+- **Input handling:** the body size is capped while it streams in, before any parsing. Binary content and unknown languages are rejected. n8n JSON is parsed strictly (no `NaN`, depth-guarded, must contain a `nodes` array) and re-serialized, so Semgrep only ever sees well-formed JSON. Source files are scanned byte-for-byte with their own line endings.
+- **Temporary files:** each scan writes to its own `mkdtemp` directory (0700) as a 0600 file opened with `O_EXCL`. The file name is chosen by the server (for example `source.py`); the uploaded name is never used as a path. The directory is deleted when the scan ends, whether it succeeds, fails or times out.
 - **Running Semgrep:**
   - Semgrep is started with a fixed argument list and no shell.
   - Only local rules are used: no registry fetches, metrics are off and version checks are disabled, so workflow content never leaves the host.

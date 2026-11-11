@@ -1,0 +1,79 @@
+rules:
+  - id: dockerfile-runs-as-root
+    languages: [dockerfile]
+    severity: WARNING
+    message: The container's final stage has no USER instruction (or USER root), so it runs as root.
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: CMD ...
+              - pattern: ENTRYPOINT ...
+          - pattern-not-inside: |
+              USER $U
+              ...
+      - pattern: USER root
+    metadata:
+      title: Container runs as root
+      brief: "The container runs as the root user, so a break-in gets full control inside it."
+      risk: medium
+      category: configuration
+      cwe: "CWE-250: Execution with Unnecessary Privileges"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Create an unprivileged user and add USER <name> before CMD / ENTRYPOINT.
+
+  - id: dockerfile-secret-in-env
+    languages: [dockerfile]
+    severity: ERROR
+    message: A secret is baked into the image through ENV or ARG.
+    # Same line only ([ \t], not \s): "ARG NPM_TOKEN" without a value is fine.
+    pattern-regex: (?im)^[ \t]*(ENV|ARG)[ \t]+\w*(PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)\w*([ \t]*=[ \t]*|[ \t]+)(?!\$)["']?[^\s"'$]{4,}
+    metadata:
+      title: Secret baked into image
+      brief: "A password or key is stored in the image, where anyone who pulls it can read it."
+      risk: high
+      category: secrets
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: Pass secrets at runtime (environment / orchestrator secrets) or use BuildKit --mount=type=secret.
+
+  - id: dockerfile-latest-tag
+    languages: [dockerfile]
+    severity: INFO
+    message: The base image uses the :latest tag.
+    pattern-regex: (?im)^\s*FROM\s+(--platform=\S+\s+)?\S+:latest\b
+    metadata:
+      title: Unpinned base image (:latest)
+      brief: "The base image can change without notice, pulling in untested or malicious updates."
+      risk: low
+      category: configuration
+      cwe: "CWE-1104: Use of Unmaintained Third Party Components"
+      owasp: "A06:2021 - Vulnerable and Outdated Components"
+      remediation: Pin a specific version tag, ideally with a digest (image:1.2.3@sha256:...).
+
+  - id: dockerfile-curl-pipe-shell
+    languages: [dockerfile]
+    severity: ERROR
+    message: A RUN step pipes a downloaded script into a shell.
+    pattern-regex: (?im)^\s*RUN\b.*\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z)?sh\b
+    metadata:
+      title: Remote script piped to shell
+      brief: "A script is downloaded and run without any check, so a compromised server could run anything."
+      risk: high
+      category: code-execution
+      cwe: "CWE-494: Download of Code Without Integrity Check"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: Download, verify the checksum, then execute; or install from a package repository.
+
+  - id: dockerfile-add-remote-url
+    languages: [dockerfile]
+    severity: INFO
+    message: ADD downloads a remote file without integrity checking.
+    pattern-regex: (?im)^\s*ADD\s+(--\S+\s+)*https?://
+    metadata:
+      title: ADD from remote URL
+      brief: "A file is downloaded into the image without checking it has not been tampered with."
+      risk: low
+      category: configuration
+      cwe: "CWE-494: Download of Code Without Integrity Check"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: Use ADD --checksum=sha256:... or RUN curl + checksum verification, and COPY for local files.

@@ -1,0 +1,185 @@
+rules:
+  - id: python-command-injection
+    languages: [python]
+    severity: ERROR
+    message: A shell command is built from non-constant data and run through the shell.
+    patterns:
+      - pattern-either:
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD, ...)
+          - pattern: subprocess.$FN($CMD, ..., shell=True, ...)
+          - pattern: commands.getoutput($CMD)
+      - pattern-not: os.system("...")
+      - pattern-not: os.popen("...", ...)
+      - pattern-not: subprocess.$FN("...", ..., shell=True, ...)
+    metadata:
+      title: Command injection risk
+      brief: "Data is inserted into a shell command, so an attacker could run their own commands."
+      risk: high
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Call subprocess.run([...]) with a list of arguments and shell=False,
+        and validate inputs against an allow-list. Never build shell strings
+        from user data.
+
+  - id: python-code-eval
+    languages: [python]
+    severity: ERROR
+    message: eval()/exec() runs a non-constant string as Python code.
+    patterns:
+      - pattern-either:
+          - pattern: eval($X, ...)
+          - pattern: exec($X, ...)
+      - pattern-not: eval("...", ...)
+      - pattern-not: exec("...", ...)
+    metadata:
+      title: Dynamic code execution (eval / exec)
+      brief: "eval or exec runs text as code, which can let an attacker execute anything."
+      risk: high
+      category: code-execution
+      cwe: "CWE-95: Eval Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Remove eval/exec. Use ast.literal_eval for literals, json.loads for
+        data, or an explicit mapping of allowed operations.
+
+  - id: python-sql-injection
+    languages: [python]
+    severity: ERROR
+    message: A SQL query is built with string formatting or concatenation.
+    patterns:
+      - pattern-either:
+          - pattern: $CUR.$EXEC("..." % $X, ...)
+          - pattern: $CUR.$EXEC($A + $B, ...)
+          - pattern: $CUR.$EXEC("...".format(...), ...)
+          - pattern: $CUR.$EXEC(f"...", ...)
+      - metavariable-regex:
+          metavariable: $EXEC
+          regex: ^(execute|executemany|executescript|exec_driver_sql|raw|extra|query|read_sql|read_sql_query)$
+    metadata:
+      title: SQL injection risk
+      brief: "A database query is built by joining text, letting an attacker read or change data."
+      risk: high
+      category: injection
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Use parameterised queries: cursor.execute("... WHERE id = %s", (id,))
+        or your ORM's query builder.
+
+  - id: python-insecure-deserialization
+    languages: [python]
+    severity: ERROR
+    message: Untrusted data may be deserialised with pickle / marshal / unsafe YAML.
+    patterns:
+      - pattern-either:
+          - pattern: pickle.loads(...)
+          - pattern: pickle.load(...)
+          - pattern: cPickle.loads(...)
+          - pattern: dill.loads(...)
+          - pattern: marshal.loads(...)
+          - pattern: yaml.unsafe_load(...)
+          - pattern: yaml.load(...)
+      - pattern-not: yaml.load(..., Loader=yaml.SafeLoader, ...)
+      - pattern-not: yaml.load(..., Loader=yaml.CSafeLoader, ...)
+      - pattern-not: yaml.load(..., Loader=SafeLoader, ...)
+    metadata:
+      title: Insecure deserialisation
+      brief: "Loading pickle or unsafe YAML data can run attacker-supplied code."
+      risk: high
+      category: code-execution
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: >-
+        Use json or yaml.safe_load for data from outside the program. Only
+        unpickle data you created and signed yourself.
+
+  - id: python-tls-verification-disabled
+    languages: [python]
+    severity: ERROR
+    message: TLS certificate verification is turned off.
+    pattern-either:
+      - pattern: requests.$M(..., verify=False, ...)
+      - pattern: httpx.$M(..., verify=False, ...)
+      - pattern: $S.verify = False
+      - pattern: ssl._create_unverified_context(...)
+      - pattern: urllib3.disable_warnings(...)
+    metadata:
+      title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: >-
+        Remove verify=False. For internal certificates, pass the CA bundle:
+        verify="/path/to/ca.pem".
+
+  - id: python-jwt-signature-not-verified
+    languages: [python]
+    severity: ERROR
+    message: A JWT is decoded without verifying its signature.
+    pattern-either:
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: jwt.decode(..., verify=False, ...)
+    metadata:
+      title: JWT signature not verified
+      brief: "Login tokens are accepted without checking their signature, so they can be forged."
+      risk: high
+      category: crypto
+      cwe: "CWE-347: Improper Verification of Cryptographic Signature"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: Always verify the signature and pin the algorithm, e.g. jwt.decode(token, key, algorithms=["RS256"]).
+
+  - id: python-weak-hash
+    languages: [python]
+    severity: WARNING
+    message: MD5 / SHA-1 is used; both are broken for security purposes.
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5(...)
+          - pattern: hashlib.sha1(...)
+          - pattern: hashlib.new("md5", ...)
+          - pattern: hashlib.new("sha1", ...)
+      - pattern-not: hashlib.$H(..., usedforsecurity=False, ...)
+    metadata:
+      title: Weak hash algorithm (MD5 / SHA-1)
+      brief: "MD5 or SHA-1 is used, which attackers can break or forge."
+      risk: medium
+      category: crypto
+      cwe: "CWE-328: Use of Weak Hash"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: >-
+        Use hashlib.sha256 for integrity, and bcrypt / argon2 / scrypt for
+        passwords. If MD5 is only a checksum, pass usedforsecurity=False.
+
+  - id: python-debug-enabled
+    languages: [python]
+    severity: WARNING
+    message: The web application runs with debug mode enabled.
+    pattern-either:
+      - pattern: $APP.run(..., debug=True, ...)
+      - pattern: DEBUG = True
+    metadata:
+      title: Debug mode enabled
+      brief: "Debug mode shows internal details and can allow remote code execution in production."
+      risk: medium
+      category: configuration
+      cwe: "CWE-489: Active Debug Code"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Read the debug flag from an environment variable and keep it off in production.
+
+  - id: python-insecure-temp-file
+    languages: [python]
+    severity: INFO
+    message: tempfile.mktemp() is race-prone.
+    pattern: tempfile.mktemp(...)
+    metadata:
+      title: Insecure temporary file
+      brief: "The temporary file name can be hijacked by another process before it is used."
+      risk: low
+      category: configuration
+      cwe: "CWE-377: Insecure Temporary File"
+      remediation: Use tempfile.NamedTemporaryFile() or tempfile.mkstemp().

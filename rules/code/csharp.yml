@@ -1,0 +1,103 @@
+rules:
+  - id: csharp-command-injection
+    languages: [csharp]
+    severity: ERROR
+    message: A process is started with a non-constant command or arguments.
+    patterns:
+      - pattern-either:
+          - pattern: Process.Start($CMD)
+          - pattern: Process.Start($FILE, $ARGS)
+      - pattern-not: Process.Start("...")
+      - pattern-not: Process.Start("...", "...")
+    metadata:
+      title: Command injection risk
+      brief: "Data is inserted into a system command, so an attacker could run their own commands."
+      risk: high
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Use ProcessStartInfo with ArgumentList and validated values; never pass user input to cmd.exe /c.
+
+  - id: csharp-sql-injection
+    languages: [csharp]
+    severity: ERROR
+    message: A SQL command is built with concatenation, string.Format or interpolation.
+    pattern-either:
+      - pattern: new SqlCommand($A + $B, ...)
+      - pattern: new SqlCommand(string.Format(...), ...)
+      - pattern: new SqlCommand($"...", ...)
+      - pattern: $C.CommandText = $A + $B
+      - pattern: $C.CommandText = $"..."
+      - pattern: $DB.Database.ExecuteSqlRaw($A + $B, ...)
+      - pattern: $DB.Database.ExecuteSqlRaw($"...", ...)
+      - pattern: $SET.FromSqlRaw($A + $B, ...)
+      - pattern: $SET.FromSqlRaw($"...", ...)
+    metadata:
+      title: SQL injection risk
+      brief: "A database query is built by joining text, letting an attacker read or change data."
+      risk: high
+      category: injection
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Use SqlParameter / @placeholders, or EF Core's FromSqlInterpolated / ExecuteSqlInterpolated.
+
+  - id: csharp-insecure-deserialization
+    languages: [csharp]
+    severity: ERROR
+    message: An unsafe serializer that can instantiate arbitrary types is used.
+    pattern-either:
+      - pattern: new BinaryFormatter(...)
+      - pattern: new LosFormatter(...)
+      - pattern: new NetDataContractSerializer(...)
+      - pattern: new SoapFormatter(...)
+      - pattern: TypeNameHandling.All
+      - pattern: TypeNameHandling.Auto
+      - pattern: TypeNameHandling.Objects
+    metadata:
+      title: Insecure deserialisation
+      brief: "Deserialising untrusted data with this serializer can run attacker-supplied code."
+      risk: high
+      category: code-execution
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: Use System.Text.Json with known types, and keep Json.NET TypeNameHandling at None.
+
+  - id: csharp-tls-validation-disabled
+    languages: [csharp]
+    severity: ERROR
+    message: Server certificate validation always succeeds.
+    pattern-either:
+      - pattern: HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+      - pattern: $H.ServerCertificateCustomValidationCallback = ($A, $B, $C, $D) => true
+      - pattern: ServicePointManager.ServerCertificateValidationCallback = ($A, $B, $C, $D) => true
+      - pattern: ServicePointManager.ServerCertificateValidationCallback += ($A, $B, $C, $D) => true
+    metadata:
+      title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Remove the custom callback; install private CAs in the machine trust store.
+
+  - id: csharp-weak-crypto
+    languages: [csharp]
+    severity: WARNING
+    message: A weak hash or cipher (MD5, SHA-1, DES, TripleDES, RC2) is used.
+    pattern-either:
+      - pattern: MD5.Create(...)
+      - pattern: SHA1.Create(...)
+      - pattern: new MD5CryptoServiceProvider()
+      - pattern: new SHA1CryptoServiceProvider()
+      - pattern: new SHA1Managed()
+      - pattern: DES.Create(...)
+      - pattern: TripleDES.Create(...)
+      - pattern: RC2.Create(...)
+    metadata:
+      title: Weak cryptography
+      brief: "An outdated hash or encryption method is used that attackers can break."
+      risk: medium
+      category: crypto
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use SHA256 and AES-GCM; use ASP.NET Core Identity / PBKDF2 for passwords.

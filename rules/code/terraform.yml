@@ -1,0 +1,91 @@
+rules:
+  - id: terraform-public-bucket
+    languages: [hcl]
+    severity: ERROR
+    message: The storage bucket is publicly readable or writable.
+    pattern-either:
+      - pattern: acl = "public-read"
+      - pattern: acl = "public-read-write"
+      - pattern: block_public_acls = false
+      - pattern: block_public_policy = false
+      - pattern: restrict_public_buckets = false
+    metadata:
+      title: Public storage bucket
+      brief: "A storage bucket is open to the internet, so anyone may read or change its files."
+      risk: high
+      category: configuration
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A01:2021 - Broken Access Control"
+      remediation: Use private ACLs and enable all four S3 Block Public Access settings.
+
+  - id: terraform-open-ingress
+    languages: [hcl]
+    severity: ERROR
+    message: A firewall / security group allows inbound traffic from the whole internet.
+    pattern-either:
+      - patterns:
+          - pattern-inside: |
+              ingress { ... }
+          - pattern: cidr_blocks = [..., "0.0.0.0/0", ...]
+      - patterns:
+          - pattern-inside: |
+              resource "aws_security_group_rule" $N { ... type = "ingress" ... }
+          - pattern: cidr_blocks = [..., "0.0.0.0/0", ...]
+      - pattern: source_address_prefix = "*"
+      - pattern: source_ranges = [..., "0.0.0.0/0", ...]
+    metadata:
+      title: Open to the internet (0.0.0.0/0)
+      brief: "A network rule lets anyone on the internet connect to this resource."
+      risk: high
+      category: configuration
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Restrict ingress to known IP ranges, a VPN or a load balancer.
+
+  - id: terraform-iam-wildcard
+    languages: [hcl]
+    severity: ERROR
+    message: An IAM policy grants all actions ("*").
+    pattern-either:
+      - pattern: actions = [..., "*", ...]
+      - pattern-regex: '"Action"\s*[:=]\s*"\*"'
+      - pattern-regex: '"Action"\s*[:=]\s*\[[^\]]*"\*"'
+    metadata:
+      title: IAM policy allows every action
+      brief: "A permission policy grants full access, far more than the resource needs."
+      risk: high
+      category: configuration
+      cwe: "CWE-269: Improper Privilege Management"
+      owasp: "A01:2021 - Broken Access Control"
+      remediation: List only the specific actions and resources required (least privilege).
+
+  - id: terraform-publicly-accessible-db
+    languages: [hcl]
+    severity: ERROR
+    message: The database is reachable from the internet.
+    pattern: publicly_accessible = true
+    metadata:
+      title: Database publicly accessible
+      brief: "The database can be reached from the internet."
+      risk: high
+      category: configuration
+      cwe: "CWE-284: Improper Access Control"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Set publicly_accessible = false and reach the database through private networking.
+
+  - id: terraform-encryption-disabled
+    languages: [hcl]
+    severity: WARNING
+    message: Encryption at rest is disabled.
+    pattern-either:
+      - pattern: encrypted = false
+      - pattern: storage_encrypted = false
+      - pattern: enable_encryption = false
+    metadata:
+      title: Encryption at rest disabled
+      brief: "Stored data is not encrypted, so a leaked disk or snapshot exposes it."
+      risk: medium
+      category: crypto
+      cwe: "CWE-311: Missing Encryption of Sensitive Data"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Enable encryption (ideally with a customer-managed KMS key).

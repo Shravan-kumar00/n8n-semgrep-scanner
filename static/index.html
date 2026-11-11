@@ -3,117 +3,173 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>n8n Workflow Scanner</title>
+  <title>Security Scanner</title>
   <link rel="icon" href="data:,">
-  <meta name="description" content="Scan n8n workflow JSON for leaked credentials, AI agent data leaks, Microsoft 365 / monday.com risks and insecure settings using Semgrep.">
+  <meta name="description" content="Scan n8n workflows, source code and infrastructure files for leaked credentials, injection, AI agent data leaks and insecure configuration, powered by Semgrep.">
   <!-- Tailwind Play CDN: fine for an internal tool. For a stricter CSP, build
        the CSS with the Tailwind CLI and serve it from /static instead. -->
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body class="min-h-full bg-slate-100 text-slate-900 antialiased">
-  <header class="border-b border-slate-200 bg-white">
-    <div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
+  <!-- ================================ HEADER ================================ -->
+  <header class="bg-slate-950 text-white">
+    <div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3">
       <div class="flex items-center gap-3">
-        <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-white">
+        <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-900/40">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-5 w-5" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4"/>
           </svg>
         </div>
         <div>
-          <h1 class="text-lg font-semibold leading-tight">n8n Workflow Scanner</h1>
-          <p class="text-xs text-slate-500">Secrets, AI agents, Microsoft 365 &amp; monday.com checks · powered by Semgrep</p>
+          <p class="text-base font-semibold leading-tight">Security Scanner</p>
+          <p class="text-[11px] text-slate-400">Workflows · Code · Infrastructure</p>
         </div>
       </div>
-      <span id="engine-status" class="hidden rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600"></span>
+      <div class="flex items-center gap-2">
+        <span id="engine-status" class="hidden rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[11px] text-slate-300"></span>
+        <span class="hidden items-center gap-1.5 rounded-full border border-emerald-800 bg-emerald-950 px-3 py-1 text-[11px] text-emerald-300 sm:inline-flex">
+          <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>Runs locally
+        </span>
+      </div>
     </div>
   </header>
 
-  <main class="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6">
-    <!-- ============================== INPUT ============================== -->
-    <section aria-labelledby="input-heading" class="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
-        <h2 id="input-heading" class="text-sm font-semibold">Workflow JSON</h2>
-        <div class="flex flex-wrap gap-2">
-          <!-- The file is read in the browser and placed in the editor; it is
-               only sent to the server when you press Scan. -->
-          <input id="file-input" type="file" accept=".json,application/json" class="sr-only" tabindex="-1">
-          <button id="btn-upload" type="button" class="inline-flex items-center gap-1.5 rounded-md border border-indigo-300 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3.5 w-3.5" aria-hidden="true"><path d="M9.25 13.25a.75.75 0 0 0 1.5 0V4.6l2.95 3.1a.75.75 0 1 0 1.1-1.04l-4.25-4.5a.75.75 0 0 0-1.1 0L5.2 6.66a.75.75 0 1 0 1.1 1.04l2.95-3.1v8.65z"/><path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z"/></svg>
-            Upload .json
-          </button>
-          <label for="sample-select" class="sr-only">Load a sample workflow</label>
-          <select id="sample-select" class="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-medium hover:bg-slate-100">
-            <option value="">Load sample…</option>
-            <option value="vulnerable-workflow.json">Secrets, injection &amp; TLS</option>
-            <option value="ai-agents-m365-workflow.json">AI agents + Outlook / Teams / monday.com</option>
-          </select>
-          <button id="btn-format" type="button" class="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium hover:bg-slate-100">Format</button>
-          <button id="btn-clear" type="button" class="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium hover:bg-slate-100">Clear</button>
-        </div>
-      </div>
-
-      <label for="workflow-input" class="sr-only">n8n workflow JSON</label>
-      <p id="file-name" class="hidden border-b border-slate-800 bg-slate-900 px-4 py-1.5 font-mono text-[11px] text-slate-400"></p>
-      <div id="drop-zone" class="relative flex overflow-hidden bg-slate-950">
-        <div id="drop-overlay" class="pointer-events-none absolute inset-2 z-20 hidden items-center justify-center rounded-lg border-2 border-dashed border-indigo-400 bg-indigo-950/80 text-sm font-medium text-indigo-100">
-          Drop the .json file to load it
-        </div>
-        <!-- Highlights the lines a finding points to ("Show line N in editor"). -->
-        <div id="line-highlight" class="pointer-events-none absolute inset-x-0 z-10 hidden border-y border-amber-400/70 bg-amber-300/20"></div>
-        <!-- Line numbers; scrolled in sync with the textarea. Lines never wrap
-             (wrap="off") so number N always sits next to line N. -->
-        <!-- Absolutely positioned so the textarea alone sets the editor height. -->
-        <div class="relative w-14 shrink-0 border-r border-slate-800 bg-slate-900">
-          <pre id="gutter" aria-hidden="true" class="absolute inset-0 m-0 select-none overflow-hidden py-4 pr-3 text-right font-mono text-xs leading-5 text-slate-500">1</pre>
-        </div>
-        <textarea id="workflow-input" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"
-          class="h-80 min-w-0 flex-1 resize-y whitespace-pre border-0 bg-transparent p-4 font-mono text-xs leading-5 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-500"
-          placeholder='Paste an n8n workflow export here, click "Upload .json", or drag a file onto this box…&#10;&#10;{&#10;  "name": "My workflow",&#10;  "nodes": [ … ],&#10;  "connections": { … }&#10;}'></textarea>
-      </div>
-
-      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3">
-        <p id="input-meta" class="text-xs text-slate-500">0 bytes</p>
-        <div class="flex flex-wrap items-center gap-3">
-          <fieldset class="flex rounded-md border border-slate-300 p-0.5 text-xs font-medium">
-            <legend class="sr-only">Scan mode</legend>
-            <label class="cursor-pointer">
-              <input type="radio" name="profile" value="full" class="peer sr-only" checked>
-              <span class="block rounded px-2.5 py-1 text-slate-600 peer-checked:bg-slate-900 peer-checked:text-white peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500" title="Secrets, AI agents, Outlook/Teams/monday.com, injection, TLS, webhook and code checks">All checks</span>
-            </label>
-            <label class="cursor-pointer">
-              <input type="radio" name="profile" value="credentials" class="peer sr-only">
-              <span class="block rounded px-2.5 py-1 text-slate-600 peer-checked:bg-slate-900 peer-checked:text-white peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500" title="Only hardcoded passwords, tokens, API keys and credentials in URLs">Credentials only</span>
-            </label>
-          </fieldset>
-          <span class="hidden text-xs text-slate-400 sm:inline">Ctrl/⌘ + Enter</span>
-          <button id="btn-scan" type="button"
-            class="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60">
-            <svg id="scan-spinner" class="hidden h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"/>
-              <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
-            </svg>
-            <span id="scan-label">Scan Workflow</span>
-          </button>
-        </div>
-      </div>
-      <p class="border-t border-slate-100 px-4 py-2 text-[11px] text-slate-400">
-        Scans run on this server with local rules only; workflow content is not stored or sent to third parties.
+  <!-- ================================= HERO ================================= -->
+  <section class="relative overflow-hidden bg-gradient-to-b from-slate-950 via-slate-900 to-slate-800 text-white">
+    <div class="pointer-events-none absolute -right-32 -top-32 h-96 w-96 rounded-full bg-indigo-600/20 blur-3xl"></div>
+    <div class="pointer-events-none absolute -left-24 top-10 h-72 w-72 rounded-full bg-violet-600/10 blur-3xl"></div>
+    <div class="relative mx-auto max-w-6xl px-4 pb-24 pt-10">
+      <h1 class="max-w-3xl text-2xl font-bold tracking-tight sm:text-3xl">One scanner for your workflows, code and infrastructure</h1>
+      <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+        Upload an n8n workflow, a source file or a config file. Get a clear report of leaked credentials,
+        injection risks, AI agent data leaks and insecure settings, with a plain-English fix for each one.
       </p>
+      <div class="mt-6 flex flex-wrap gap-2 text-xs">
+        <span class="rounded-full bg-white/10 px-3 py-1 ring-1 ring-inset ring-white/15"><b id="stat-languages">14</b> languages &amp; formats</span>
+        <span class="rounded-full bg-white/10 px-3 py-1 ring-1 ring-inset ring-white/15"><b id="stat-rules">100+</b> security rules</span>
+        <span class="rounded-full bg-white/10 px-3 py-1 ring-1 ring-inset ring-white/15">Nothing stored or sent to third parties</span>
+      </div>
+    </div>
+  </section>
+
+  <main class="relative mx-auto -mt-16 flex max-w-6xl flex-col gap-6 px-4 pb-12">
+    <!-- ============================== NEW SCAN ============================== -->
+    <section aria-labelledby="scan-heading" class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
+      <h2 id="scan-heading" class="sr-only">New scan</h2>
+
+      <!-- Step 1: language -->
+      <div class="border-b border-slate-100 px-5 py-5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <p class="flex items-center gap-2 text-sm font-semibold">
+            <span class="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-xs text-white">1</span>
+            What are you scanning?
+          </p>
+          <p id="detect-note" class="hidden rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700"></p>
+        </div>
+        <div id="language-picker" class="mt-4 grid gap-4 lg:grid-cols-[auto_1fr]" role="radiogroup" aria-label="Language or file type"></div>
+      </div>
+
+      <!-- Step 2: file -->
+      <div class="px-5 pb-5 pt-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="flex items-center gap-2 text-sm font-semibold">
+            <span class="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-xs text-white">2</span>
+            Add your file
+          </p>
+          <div class="flex flex-wrap gap-2">
+            <!-- The file is read in the browser and placed in the editor; it is
+                 only sent to the server when you press Scan. -->
+            <input id="file-input" type="file" class="sr-only" tabindex="-1">
+            <button id="btn-upload" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3.5 w-3.5" aria-hidden="true"><path d="M9.25 13.25a.75.75 0 0 0 1.5 0V4.6l2.95 3.1a.75.75 0 1 0 1.1-1.04l-4.25-4.5a.75.75 0 0 0-1.1 0L5.2 6.66a.75.75 0 1 0 1.1 1.04l2.95-3.1v8.65z"/><path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z"/></svg>
+              Upload file
+            </button>
+            <button id="btn-sample" type="button" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Load sample</button>
+            <button id="btn-format" type="button" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Format JSON</button>
+            <button id="btn-clear" type="button" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Clear</button>
+          </div>
+        </div>
+
+        <div class="mt-3 overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-inner">
+          <!-- Editor tab bar -->
+          <div class="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-900 px-3 py-2">
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="flex gap-1" aria-hidden="true"><span class="h-2.5 w-2.5 rounded-full bg-slate-700"></span><span class="h-2.5 w-2.5 rounded-full bg-slate-700"></span><span class="h-2.5 w-2.5 rounded-full bg-slate-700"></span></span>
+              <span id="editor-badge" class="ml-2 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold"></span>
+              <span id="file-name" class="truncate font-mono text-xs text-slate-300">untitled</span>
+            </div>
+            <span id="input-meta" class="shrink-0 font-mono text-[11px] text-slate-500">0 lines</span>
+          </div>
+          <label for="workflow-input" class="sr-only">File contents</label>
+          <div id="drop-zone" class="relative flex overflow-hidden">
+            <div id="drop-overlay" class="pointer-events-none absolute inset-2 z-20 hidden flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-indigo-400 bg-indigo-950/85 text-indigo-100">
+              <span class="text-sm font-semibold">Drop the file to load it</span>
+              <span class="text-xs text-indigo-300">Any supported language or config file</span>
+            </div>
+            <!-- Highlights the lines a finding points to ("Show line N in editor"). -->
+            <div id="line-highlight" class="pointer-events-none absolute inset-x-0 z-10 hidden border-y border-amber-400/70 bg-amber-300/20"></div>
+            <!-- Line numbers; absolutely positioned so the textarea alone sets the height. -->
+            <div class="relative w-14 shrink-0 border-r border-slate-800 bg-slate-900/60">
+              <pre id="gutter" aria-hidden="true" class="absolute inset-0 m-0 select-none overflow-hidden py-4 pr-3 text-right font-mono text-xs leading-5 text-slate-600">1</pre>
+            </div>
+            <textarea id="workflow-input" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"
+              class="h-96 min-w-0 flex-1 resize-y whitespace-pre border-0 bg-transparent p-4 font-mono text-xs leading-5 text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-500"></textarea>
+          </div>
+        </div>
+
+        <!-- Scan bar -->
+        <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <p class="text-[11px] text-slate-500">Files are read in your browser and only sent to this server when you press Scan. Nothing is stored.</p>
+          <div class="flex flex-wrap items-center gap-3">
+            <fieldset class="flex rounded-lg border border-slate-300 bg-slate-50 p-0.5 text-xs font-medium">
+              <legend class="sr-only">Scan mode</legend>
+              <label class="cursor-pointer">
+                <input type="radio" name="profile" value="full" class="peer sr-only" checked>
+                <span class="block rounded-md px-3 py-1.5 text-slate-600 peer-checked:bg-white peer-checked:text-slate-900 peer-checked:shadow-sm peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500" title="Every rule for the selected language">All checks</span>
+              </label>
+              <label class="cursor-pointer">
+                <input type="radio" name="profile" value="credentials" class="peer sr-only">
+                <span class="block rounded-md px-3 py-1.5 text-slate-600 peer-checked:bg-white peer-checked:text-slate-900 peer-checked:shadow-sm peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500" title="Only hardcoded passwords, tokens, API keys and credentials in URLs">Credentials only</span>
+              </label>
+            </fieldset>
+            <span class="hidden text-[11px] text-slate-400 md:inline">Ctrl/⌘ + Enter</span>
+            <button id="btn-scan" type="button"
+              class="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-indigo-600/25 hover:from-indigo-500 hover:to-violet-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60">
+              <svg id="scan-spinner" class="hidden h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"/>
+                <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+              </svg>
+              <span id="scan-label">Scan file</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <div id="error-box" role="alert" class="hidden rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"></div>
 
     <!-- ============================== REPORT ============================== -->
-    <section id="empty-state" class="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
-      <h2 class="text-sm font-semibold text-slate-700">No scan yet</h2>
-      <p class="mx-auto mt-1 max-w-md text-sm text-slate-500">Paste or upload a workflow and press <span class="font-medium">Scan Workflow</span>. You'll get a readable security report with a verdict, what to fix first, where your data goes, and step-by-step fixes.</p>
+    <section id="empty-state" class="grid gap-4 sm:grid-cols-3">
+      <div class="rounded-xl border border-slate-200 bg-white p-5">
+        <p class="text-sm font-semibold">Leaked credentials</p>
+        <p class="mt-1 text-xs leading-5 text-slate-500">Passwords, API keys, tokens, connection strings and cloud keys left in files, with the exact exposed value.</p>
+      </div>
+      <div class="rounded-xl border border-slate-200 bg-white p-5">
+        <p class="text-sm font-semibold">Code &amp; AI risks</p>
+        <p class="mt-1 text-xs leading-5 text-slate-500">Injection, unsafe eval and deserialisation, weak crypto, and AI agents that could be tricked into leaking data.</p>
+      </div>
+      <div class="rounded-xl border border-slate-200 bg-white p-5">
+        <p class="text-sm font-semibold">Insecure configuration</p>
+        <p class="mt-1 text-xs leading-5 text-slate-500">Disabled TLS checks, root containers, public buckets, open firewalls and risky CI workflows.</p>
+      </div>
     </section>
 
     <section id="report" aria-labelledby="report-title" aria-live="polite" class="hidden flex-col gap-5">
       <!-- Verdict -->
-      <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div id="verdict" class="flex flex-wrap items-center justify-between gap-4 px-5 py-4 text-white">
+      <div class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div id="verdict" class="flex flex-wrap items-center justify-between gap-4 px-5 py-5 text-white">
           <div>
             <p class="text-xs font-semibold uppercase tracking-wider opacity-80">Overall risk</p>
             <p id="verdict-label" class="text-2xl font-bold leading-tight"></p>
@@ -124,17 +180,20 @@
               <input id="include-secrets" type="checkbox" class="h-3.5 w-3.5 rounded border-white/60">
               Include exposed values in downloads
             </label>
-            <button id="btn-pdf" type="button" class="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-slate-900 shadow-sm hover:bg-slate-100 disabled:cursor-wait disabled:opacity-70">
+            <button id="btn-pdf" type="button" class="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-slate-900 shadow-sm hover:bg-slate-100 disabled:cursor-wait disabled:opacity-70">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3.5 w-3.5" aria-hidden="true"><path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.6L6.3 8.25a.75.75 0 1 0-1.1 1.02l4.25 4.5a.75.75 0 0 0 1.1 0l4.25-4.5a.75.75 0 1 0-1.1-1.02l-2.95 3.1v-8.6z"/><path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z"/></svg>
               <span id="btn-pdf-label">Download PDF</span>
             </button>
-            <button id="btn-html" type="button" class="rounded-md bg-white/20 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-inset ring-white/40 hover:bg-white/30">HTML</button>
-            <button id="btn-md" type="button" class="rounded-md bg-white/20 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-inset ring-white/40 hover:bg-white/30">Markdown</button>
-            <button id="btn-json" type="button" class="rounded-md bg-white/20 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-inset ring-white/40 hover:bg-white/30">JSON</button>
+            <button id="btn-html" type="button" class="rounded-lg bg-white/20 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-inset ring-white/40 hover:bg-white/30">HTML</button>
+            <button id="btn-md" type="button" class="rounded-lg bg-white/20 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-inset ring-white/40 hover:bg-white/30">Markdown</button>
+            <button id="btn-json" type="button" class="rounded-lg bg-white/20 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-inset ring-white/40 hover:bg-white/30">JSON</button>
           </div>
         </div>
         <div class="px-5 py-4">
-          <h2 id="report-title" class="text-base font-semibold"></h2>
+          <div class="flex flex-wrap items-center gap-2">
+            <span id="report-badge" class="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold"></span>
+            <h2 id="report-title" class="text-base font-semibold"></h2>
+          </div>
           <p id="report-meta" class="mt-0.5 text-xs text-slate-500"></p>
           <div id="summary" class="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-6"></div>
         </div>
@@ -143,22 +202,19 @@
       <div id="warnings" class="hidden rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"></div>
 
       <div class="grid gap-5 lg:grid-cols-2">
-        <!-- Fix first -->
-        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 class="text-sm font-semibold">Fix these first</h3>
           <p class="mt-0.5 text-xs text-slate-500">The most severe issues, in order.</p>
-          <ol id="priorities" class="mt-3 flex flex-col gap-2"></ol>
+          <ol id="priorities" class="mt-3 flex flex-col gap-1"></ol>
         </div>
-        <!-- Areas -->
-        <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 class="text-sm font-semibold">Risk by area</h3>
           <p class="mt-0.5 text-xs text-slate-500">Click an area to show only its findings.</p>
           <div id="areas" class="mt-3 grid gap-2 sm:grid-cols-2"></div>
         </div>
       </div>
 
-      <!-- Data flows -->
-      <div id="flows-card" class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div id="flows-card" class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h3 class="text-sm font-semibold">Where your data goes</h3>
         <p class="mt-0.5 text-xs text-slate-500">Every external service this workflow sends data to or reads data from, including AI model providers.</p>
         <div class="mt-3 overflow-x-auto">
@@ -171,7 +227,6 @@
         </div>
       </div>
 
-      <!-- Findings -->
       <div class="flex flex-col gap-3">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -179,16 +234,20 @@
             <p id="filter-note" class="text-xs text-slate-500"></p>
           </div>
           <label class="flex items-center gap-2 text-xs text-slate-600">Group by
-            <select id="group-by" class="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs">
+            <select id="group-by" class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs">
               <option value="area">Area</option>
               <option value="risk">Severity</option>
-              <option value="node">Node</option>
+              <option value="node" id="group-by-node">Node</option>
             </select>
           </label>
         </div>
         <div id="findings" class="flex flex-col gap-5"></div>
       </div>
     </section>
+
+    <p class="text-center text-[11px] text-slate-400">
+      Automated findings are a starting point for review, not a guarantee of security. Always confirm with your security team.
+    </p>
   </main>
 
   <template id="finding-template">
@@ -200,6 +259,7 @@
           <p data-field="brief" class="mt-0.5 text-sm text-slate-700"></p>
           <p data-field="node" class="mt-0.5 text-xs text-slate-500"></p>
         </div>
+        <button type="button" data-field="jump" class="shrink-0 rounded-md border border-slate-200 px-2 py-1 font-mono text-[11px] text-indigo-700 hover:bg-indigo-50"></button>
       </div>
       <div class="grid gap-3 px-4 py-3 text-sm md:grid-cols-2">
         <div data-field="exposed-wrap" class="hidden rounded-md border border-red-200 bg-red-50 p-3 md:col-span-2">
@@ -220,7 +280,6 @@
         <div class="space-y-2 pb-2 pt-2">
           <pre data-field="snippet" class="overflow-x-auto rounded-md bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-100"></pre>
           <p class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
-            <button type="button" data-field="lines" class="text-indigo-600 hover:underline"></button>
             <span data-field="source"></span>
             <code data-field="rule" class="text-slate-400"></code>
             <span data-field="refs"></span>

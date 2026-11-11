@@ -1,0 +1,116 @@
+rules:
+  - id: java-command-injection
+    languages: [java]
+    severity: ERROR
+    message: Runtime.exec() is called with a non-constant command.
+    patterns:
+      - pattern-either:
+          - pattern: Runtime.getRuntime().exec($CMD, ...)
+          - pattern: new ProcessBuilder("sh", "-c", $CMD, ...)
+          - pattern: new ProcessBuilder("bash", "-c", $CMD, ...)
+          - pattern: new ProcessBuilder("cmd", "/c", $CMD, ...)
+          - pattern: new ProcessBuilder("cmd.exe", "/c", $CMD, ...)
+      - pattern-not: Runtime.getRuntime().exec("...", ...)
+      - pattern-not: new ProcessBuilder($A, $B, "...")
+    metadata:
+      title: Command injection risk
+      brief: "Data is inserted into a shell command, so an attacker could run their own commands."
+      risk: high
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Use ProcessBuilder with a fixed program and separate, validated arguments (no shell).
+
+  - id: java-sql-injection
+    languages: [java]
+    severity: ERROR
+    message: A SQL / JPQL query is built with string concatenation or String.format.
+    patterns:
+      - pattern-either:
+          - pattern: $S.$M($A + $B, ...)
+          - pattern: $S.$M(String.format(...), ...)
+      - metavariable-regex:
+          metavariable: $M
+          regex: ^(executeQuery|executeUpdate|execute|executeLargeUpdate|addBatch|prepareStatement|prepareCall|createQuery|createNativeQuery|queryForList|queryForObject|query|update)$
+    metadata:
+      title: SQL injection risk
+      brief: "A database query is built by joining text, letting an attacker read or change data."
+      risk: high
+      category: injection
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Use PreparedStatement with ? placeholders (or named JPA parameters) and bind the values.
+
+  - id: java-insecure-deserialization
+    languages: [java]
+    severity: ERROR
+    message: Java native deserialisation (ObjectInputStream / XMLDecoder) of untrusted data.
+    pattern-either:
+      - pattern: new ObjectInputStream(...)
+      - pattern: new XMLDecoder(...)
+      - pattern: (ObjectInputStream $O).readObject()
+    metadata:
+      title: Insecure deserialisation
+      brief: "Deserialising Java objects from outside data can run attacker-supplied code."
+      risk: high
+      category: code-execution
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: Use a data format such as JSON with explicit types, or an ObjectInputFilter allow-list.
+
+  - id: java-tls-trust-all
+    languages: [java]
+    severity: ERROR
+    message: Certificate or hostname verification is effectively disabled.
+    pattern-either:
+      - pattern: |
+          public void checkServerTrusted(...) {}
+      - pattern: |
+          public boolean verify(String $H, SSLSession $S) { return true; }
+      - pattern: NoopHostnameVerifier.INSTANCE
+      - pattern: SSLConnectionSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER
+    metadata:
+      title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use the default TrustManager and HostnameVerifier; add private CAs to a trust store instead.
+
+  - id: java-weak-crypto
+    languages: [java]
+    severity: WARNING
+    message: A weak hash or cipher (MD5, SHA-1, DES, RC4, ECB mode) is used.
+    patterns:
+      - pattern-either:
+          - pattern: MessageDigest.getInstance($ALG, ...)
+          - pattern: Cipher.getInstance($ALG, ...)
+      - metavariable-regex:
+          metavariable: $ALG
+          regex: (?i)^"(md5|md2|sha-?1|des|desede|rc2|rc4|blowfish|[a-z0-9]+/ecb/.*|aes)"$
+    metadata:
+      title: Weak cryptography
+      brief: "An outdated hash or encryption method is used that attackers can break."
+      risk: medium
+      category: crypto
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use SHA-256 or better, and AES/GCM/NoPadding for encryption (plain "AES" defaults to insecure ECB).
+
+  - id: java-spring-csrf-disabled
+    languages: [java]
+    severity: WARNING
+    message: Spring Security CSRF protection is disabled.
+    pattern-either:
+      - pattern: $H.csrf().disable()
+      - pattern: $H.csrf($C -> $C.disable())
+      - pattern: $H.csrf(AbstractHttpConfigurer::disable)
+    metadata:
+      title: CSRF protection disabled
+      brief: "Cross-site request forgery protection is turned off, so other sites can act as a logged-in user."
+      risk: medium
+      category: configuration
+      cwe: "CWE-352: Cross-Site Request Forgery"
+      owasp: "A01:2021 - Broken Access Control"
+      remediation: Keep CSRF enabled for browser sessions; disable it only for stateless token-authenticated APIs.

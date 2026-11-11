@@ -1,0 +1,130 @@
+rules:
+  - id: ruby-command-injection
+    languages: [ruby]
+    severity: ERROR
+    message: A shell command contains interpolated or non-constant data.
+    patterns:
+      - pattern-either:
+          - pattern: system($CMD)
+          - pattern: exec($CMD)
+          - pattern: IO.popen($CMD, ...)
+          - pattern: Open3.$M($CMD, ...)
+          - pattern: '`...#{...}...`'
+          - pattern: '%x(...#{...}...)'
+      - pattern-not: system("...")
+      - pattern-not: exec("...")
+      - pattern-not: IO.popen("...", ...)
+      - pattern-not: Open3.$M("...", ...)
+    metadata:
+      title: Command injection risk
+      brief: "Data is inserted into a shell command, so an attacker could run their own commands."
+      risk: high
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Pass the program and arguments separately, e.g. system("tar", "czf", file), and validate inputs.
+
+  - id: ruby-code-eval
+    languages: [ruby]
+    severity: ERROR
+    message: eval / instance_eval / class_eval runs non-constant code.
+    patterns:
+      - pattern-either:
+          - pattern: eval($X, ...)
+          - pattern: $O.instance_eval($X, ...)
+          - pattern: $O.class_eval($X, ...)
+      - pattern-not: eval("...", ...)
+      - pattern-not: $O.instance_eval("...", ...)
+      - pattern-not: $O.class_eval("...", ...)
+    metadata:
+      title: Dynamic code execution (eval)
+      brief: "eval runs text as Ruby code, which can let an attacker execute anything."
+      risk: high
+      category: code-execution
+      cwe: "CWE-95: Eval Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Remove eval; use explicit logic or a whitelist of allowed methods.
+
+  - id: ruby-sql-injection
+    languages: [ruby]
+    severity: ERROR
+    message: An ActiveRecord / SQL query string contains interpolation.
+    patterns:
+      - pattern-either:
+          - pattern: $M.$Q("...#{...}...", ...)
+          - pattern: $M.$Q($A + $B, ...)
+      - metavariable-regex:
+          metavariable: $Q
+          regex: ^(where|find_by_sql|execute|exec_query|select_all|select_value|order|group|having|joins|pluck|delete_all|update_all|from)$
+    metadata:
+      title: SQL injection risk
+      brief: "A database query is built by joining text, letting an attacker read or change data."
+      risk: high
+      category: injection
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Use placeholders, e.g. User.where("name = ?", name) or User.where(name: name).
+
+  - id: ruby-insecure-deserialization
+    languages: [ruby]
+    severity: ERROR
+    message: Marshal / unsafe YAML loading of data.
+    pattern-either:
+      - pattern: Marshal.load(...)
+      - pattern: Marshal.restore(...)
+      - pattern: YAML.unsafe_load(...)
+      - pattern: Psych.unsafe_load(...)
+      - pattern: 'Oj.load(..., mode: :object, ...)'
+    metadata:
+      title: Insecure deserialisation
+      brief: "Loading Marshal or unsafe YAML data can run attacker-supplied code."
+      risk: high
+      category: code-execution
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: Use JSON.parse or YAML.safe_load for data from outside the program.
+
+  - id: ruby-tls-verification-disabled
+    languages: [ruby]
+    severity: ERROR
+    message: OpenSSL VERIFY_NONE disables certificate verification.
+    pattern: OpenSSL::SSL::VERIFY_NONE
+    metadata:
+      title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use OpenSSL::SSL::VERIFY_PEER and configure ca_file for private CAs.
+
+  - id: ruby-weak-hash
+    languages: [ruby]
+    severity: WARNING
+    message: Digest::MD5 / Digest::SHA1 is used.
+    pattern-either:
+      - pattern: Digest::MD5.$M(...)
+      - pattern: Digest::SHA1.$M(...)
+    metadata:
+      title: Weak hash algorithm (MD5 / SHA-1)
+      brief: "MD5 or SHA-1 is used, which attackers can break or forge."
+      risk: medium
+      category: crypto
+      cwe: "CWE-328: Use of Weak Hash"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use Digest::SHA256, and bcrypt for passwords.
+
+  - id: ruby-mass-assignment
+    languages: [ruby]
+    severity: WARNING
+    message: params.permit! allows every request parameter to be mass-assigned.
+    pattern: params.permit!
+    metadata:
+      title: Mass assignment (permit!)
+      brief: "Every request field can be written to the model, including ones like admin flags."
+      risk: medium
+      category: configuration
+      cwe: "CWE-915: Improperly Controlled Modification of Object Attributes"
+      owasp: "A01:2021 - Broken Access Control"
+      remediation: List allowed fields explicitly, e.g. params.require(:user).permit(:name, :email).

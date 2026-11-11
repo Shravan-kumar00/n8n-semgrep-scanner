@@ -1,0 +1,210 @@
+rules:
+  - id: js-command-injection
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: A shell command is built from non-constant data (child_process).
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              $CP = require('child_process');
+              ...
+          - pattern-inside: |
+              import $CP from 'child_process';
+              ...
+          - pattern-inside: |
+              import * as $CP from 'child_process';
+              ...
+      - pattern-either:
+          - pattern: $CP.exec($CMD, ...)
+          - pattern: $CP.execSync($CMD, ...)
+          - pattern: '$CP.spawn($CMD, $ARGS, {..., shell: true, ...})'
+      - pattern-not: $CP.exec("...", ...)
+      - pattern-not: $CP.execSync("...", ...)
+    metadata:
+      title: Command injection risk
+      brief: "Data is inserted into a shell command, so an attacker could run their own commands."
+      risk: high
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Use execFile/spawn with an argument array (no shell) and validate
+        inputs against an allow-list.
+
+  - id: js-code-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: eval / new Function / vm runs a non-constant string as code.
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function(..., $X)
+          - pattern: vm.runInThisContext($X, ...)
+          - pattern: vm.runInNewContext($X, ...)
+      - pattern-not: eval("...")
+      - pattern-not: new Function(..., "...")
+    metadata:
+      title: Dynamic code execution (eval)
+      brief: "eval or new Function runs text as code, which can let an attacker execute anything."
+      risk: high
+      category: code-execution
+      cwe: "CWE-95: Eval Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Remove eval/new Function. Use JSON.parse for data or an explicit map of allowed operations.
+
+  - id: js-sql-injection
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: A SQL query is built with string concatenation or a template literal.
+    patterns:
+      - pattern-either:
+          - pattern: $DB.$Q($A + $B, ...)
+          - pattern: $DB.$Q(`...${$X}...`, ...)
+      - metavariable-regex:
+          metavariable: $Q
+          regex: ^(query|execute|raw|\$queryRawUnsafe|\$executeRawUnsafe|sequelize\.query|whereRaw|joinRaw|orderByRaw)$
+    metadata:
+      title: SQL injection risk
+      brief: "A database query is built by joining text, letting an attacker read or change data."
+      risk: high
+      category: injection
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: >-
+        Use placeholders and pass values separately, e.g.
+        db.query("SELECT * FROM users WHERE id = $1", [id]).
+
+  - id: js-tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: TLS certificate verification is turned off.
+    pattern-either:
+      - pattern: '{..., rejectUnauthorized: false, ...}'
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+      - pattern: process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+    metadata:
+      title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Remove rejectUnauthorized:false. For private CAs, pass the CA certificate (ca option or NODE_EXTRA_CA_CERTS).
+
+  - id: js-xss-unsafe-html
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Non-constant HTML is written into the page.
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $X
+          - pattern: $EL.outerHTML = $X
+          - pattern: document.write($X)
+          - pattern: $EL.insertAdjacentHTML($POS, $X)
+      - pattern-not: $EL.innerHTML = "..."
+      - pattern-not: $EL.outerHTML = "..."
+      - pattern-not: document.write("...")
+      - pattern-not: $EL.insertAdjacentHTML($POS, "...")
+    metadata:
+      title: Cross-site scripting (unsafe HTML)
+      brief: "Data is written into the page as HTML, letting an attacker inject scripts."
+      risk: medium
+      category: injection
+      cwe: "CWE-79: Cross-site Scripting"
+      owasp: "A03:2021 - Injection"
+      remediation: Use textContent, or sanitise with DOMPurify before inserting HTML.
+
+  - id: js-react-dangerously-set-html
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: dangerouslySetInnerHTML renders raw HTML.
+    pattern: <$EL dangerouslySetInnerHTML={...} />
+    metadata:
+      title: Raw HTML rendered in React
+      brief: "Raw HTML is rendered in the page, letting an attacker inject scripts if it contains user data."
+      risk: medium
+      category: injection
+      cwe: "CWE-79: Cross-site Scripting"
+      owasp: "A03:2021 - Injection"
+      remediation: Render text normally, or sanitise the HTML with DOMPurify first.
+
+  - id: js-hardcoded-jwt-secret
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: A JWT is signed or verified with a hardcoded secret.
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              $JWT = require('jsonwebtoken');
+              ...
+          - pattern-inside: |
+              import $JWT from 'jsonwebtoken';
+              ...
+          - pattern-inside: |
+              import * as $JWT from 'jsonwebtoken';
+              ...
+      - pattern-either:
+          - pattern: $JWT.sign($P, "...", ...)
+          - pattern: $JWT.verify($T, "...", ...)
+    metadata:
+      title: Hardcoded JWT signing secret
+      brief: "The key that signs login tokens is in the code, so anyone with the code can forge tokens."
+      risk: high
+      category: secrets
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      remediation: Load the signing key from a secret manager or environment variable and rotate it.
+
+  - id: js-weak-hash
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: MD5 / SHA-1 is used.
+    patterns:
+      - pattern: crypto.createHash($ALG)
+      - metavariable-regex:
+          metavariable: $ALG
+          regex: (?i)^["'`](md5|sha1|sha-1)["'`]$
+    metadata:
+      title: Weak hash algorithm (MD5 / SHA-1)
+      brief: "MD5 or SHA-1 is used, which attackers can break or forge."
+      risk: medium
+      category: crypto
+      cwe: "CWE-328: Use of Weak Hash"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use SHA-256 for integrity and bcrypt / argon2 / scrypt for passwords.
+
+  - id: js-permissive-cors
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: CORS allows any origin.
+    pattern-either:
+      - pattern: 'cors({..., origin: "*", ...})'
+      - pattern: $RES.setHeader("Access-Control-Allow-Origin", "*")
+      - pattern: $RES.header("Access-Control-Allow-Origin", "*")
+      - pattern: $RES.set("Access-Control-Allow-Origin", "*")
+    metadata:
+      title: CORS allows any origin
+      brief: "Any website can call this API from a visitor's browser."
+      risk: medium
+      category: configuration
+      cwe: "CWE-942: Permissive Cross-domain Policy"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: List the specific trusted origins instead of "*".
+
+  - id: js-insecure-deserialization
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: node-serialize unserialize() can execute code embedded in the data.
+    patterns:
+      - pattern-inside: |
+          $S = require('node-serialize');
+          ...
+      - pattern: $S.unserialize(...)
+    metadata:
+      title: Insecure deserialisation
+      brief: "Deserialising untrusted data with node-serialize can run attacker-supplied code."
+      risk: high
+      category: code-execution
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: Use JSON.parse for data from outside the program.

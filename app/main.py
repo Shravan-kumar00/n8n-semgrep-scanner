@@ -17,9 +17,10 @@ from pydantic import ValidationError
 
 from . import __version__
 from .config import Settings, get_settings
-from .models import ErrorResponse, HealthResponse, PdfReportRequest, ScanRequest, ScanResponse
+from .languages import LANGUAGES, target_filename
+from .models import ErrorResponse, HealthResponse, LanguageInfo, PdfReportRequest, ScanRequest, ScanResponse
 from .pdf_report import build_pdf
-from .scanner import ScanError, ScannerBusyError, ScanTimeoutError, SemgrepScanner
+from .scanner import ScanError, ScannerBusyError, ScanTarget, ScanTimeoutError, SemgrepScanner
 from .workflow import WorkflowValidationError, normalize_workflow, parse_workflow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -48,12 +49,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     scanner.check_installation()  # refuse to start without a working semgrep
     app.state.scanner = scanner
     app.state.rule_count = scanner.count_rules()
+    app.state.languages = [
+        LanguageInfo(
+            id=lang.id, label=lang.label, group=lang.group, short=lang.short,
+            extensions=list(lang.extensions), filenames=list(lang.filenames),
+            sample=lang.sample, rules=scanner.count_rules(lang.rule_files),
+        )
+        for lang in LANGUAGES.values()
+    ]
     logger.info("semgrep %s ready, %d rules loaded from %s", scanner.version, app.state.rule_count, settings.rules_path)
     yield
 
 
 app = FastAPI(
-    title="n8n Workflow Security Scanner",
+    title="Workflow & Code Security Scanner",
     version=__version__,
     lifespan=lifespan,
     docs_url="/docs" if settings.enable_docs else None,
@@ -119,11 +128,13 @@ async def _read_limited_body(request: Request, cfg: Settings, model: type[ScanRe
 
     try:
         return model.model_validate_json(bytes(body))
-    except ValidationError:
+    except ValidationError as exc:
+        problems = "; ".join(err["msg"].removeprefix("Value error, ") for err in exc.errors()[:3])
         raise HTTPException(
             422,
-            'Request body must be JSON of the form {"workflow": "<n8n workflow JSON string>", '
-            '"profile": "full" | "credentials"}.',
+            f"Invalid request: {problems}. Expected JSON like "
+            '{"content": "<file text>", "language": "python", "filename": "app.py", "profile": "full"} '
+            "(see GET /api/languages).",
         ) from None
 
 
@@ -163,19 +174,28 @@ async def scan_report_pdf(
     result = await _run_scan(payload, scanner)
     scanned_at = datetime.now(timezone.utc)
     pdf = await asyncio.to_thread(build_pdf, result, payload.include_secrets, scanned_at)
-    slug = re.sub(r"[^a-z0-9]+", "-", (result.workflow_name or "workflow").lower()).strip("-")[:50] or "workflow"
-    filename = f"n8n-security-report-{slug}-{scanned_at:%Y-%m-%d}.pdf"
+    slug = re.sub(r"[^a-z0-9]+", "-", (result.target_name or result.language).lower()).strip("-")[:50] or "scan"
+    filename = f"security-report-{slug}-{scanned_at:%Y-%m-%d}.pdf"
     return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 async def _run_scan(payload: ScanRequest, scanner: SemgrepScanner) -> ScanResponse:
-    try:
-        workflow = normalize_workflow(parse_workflow(payload.workflow))
-    except WorkflowValidationError as exc:
-        raise HTTPException(422, str(exc)) from None
+    language = LANGUAGES[payload.language]
+    text = payload.text
+    if "\x00" in text:
+        raise HTTPException(422, "This looks like a binary file. Only text files can be scanned.")
+
+    if language.is_workflow:
+        try:
+            workflow = normalize_workflow(parse_workflow(text))
+        except WorkflowValidationError as exc:
+            raise HTTPException(422, str(exc)) from None
+        target = ScanTarget(language, workflow.text, language.default_target, workflow.name, workflow)
+    else:
+        target = ScanTarget(language, text, target_filename(language, payload.filename), _display_name(payload.filename))
 
     try:
-        return await scanner.scan(workflow, payload.profile)
+        return await scanner.scan(target, payload.profile)
     except ScannerBusyError as exc:
         raise HTTPException(429, str(exc), headers={"Retry-After": "5"}) from None
     except ScanTimeoutError as exc:
@@ -184,13 +204,29 @@ async def _run_scan(payload: ScanRequest, scanner: SemgrepScanner) -> ScanRespon
         raise HTTPException(500, str(exc)) from None
 
 
+def _display_name(filename: str | None) -> str | None:
+    """Base name of the uploaded file, for reports only (never used as a path)."""
+    if not filename:
+        return None
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name)
+    return name[:120] or None
+
+
 @app.get("/api/health", response_model=HealthResponse)
 async def health(request: Request) -> HealthResponse:
     return HealthResponse(
         status="ok",
         semgrep_version=request.app.state.scanner.version,
         rules_loaded=request.app.state.rule_count,
+        languages=len(request.app.state.languages),
     )
+
+
+@app.get("/api/languages", response_model=list[LanguageInfo])
+async def languages(request: Request) -> list[LanguageInfo]:
+    """Supported languages, their file extensions, rule counts and samples."""
+    return request.app.state.languages
 
 
 @app.exception_handler(Exception)

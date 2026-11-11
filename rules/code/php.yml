@@ -1,0 +1,154 @@
+rules:
+  - id: php-command-injection
+    languages: [php]
+    severity: ERROR
+    message: A shell command is run with non-constant input.
+    patterns:
+      - pattern-either:
+          - pattern: exec($CMD, ...)
+          - pattern: shell_exec($CMD)
+          - pattern: system($CMD, ...)
+          - pattern: passthru($CMD, ...)
+          - pattern: popen($CMD, ...)
+          - pattern: proc_open($CMD, ...)
+      - pattern-not: $F("...", ...)
+    metadata:
+      title: Command injection risk
+      brief: "Data is inserted into a shell command, so an attacker could run their own commands."
+      risk: high
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Avoid the shell; if unavoidable, wrap every argument in escapeshellarg() and validate against an allow-list.
+
+  - id: php-code-eval
+    languages: [php]
+    severity: ERROR
+    message: eval / assert / create_function runs non-constant code.
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: assert($X)
+          - pattern: create_function(...)
+      - pattern-not: eval("...")
+      - pattern-not: assert("...")
+    metadata:
+      title: Dynamic code execution (eval)
+      brief: "eval runs text as PHP code, which can let an attacker execute anything."
+      risk: high
+      category: code-execution
+      cwe: "CWE-95: Eval Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Remove eval; use explicit logic or a whitelist of callable handlers.
+
+  - id: php-sql-injection
+    languages: [php]
+    severity: ERROR
+    message: A SQL query is built with string concatenation.
+    pattern-either:
+      - pattern: mysqli_query($C, $A . $B, ...)
+      - pattern: mysql_query($A . $B, ...)
+      - pattern: $DB->query($A . $B, ...)
+      - pattern: $DB->exec($A . $B, ...)
+      - pattern: $DB->prepare($A . $B, ...)
+    metadata:
+      title: SQL injection risk
+      brief: "A database query is built by joining text, letting an attacker read or change data."
+      risk: high
+      category: injection
+      cwe: "CWE-89: SQL Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Use PDO / mysqli prepared statements with bound parameters.
+
+  - id: php-unserialize
+    languages: [php]
+    severity: ERROR
+    message: unserialize() on non-constant data allows PHP object injection.
+    patterns:
+      - pattern: unserialize($X, ...)
+      - pattern-not: unserialize("...", ...)
+    metadata:
+      title: Insecure deserialisation
+      brief: "Unserialising outside data can let an attacker trigger code in your classes."
+      risk: high
+      category: code-execution
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      remediation: Use json_decode for data from outside, or unserialize($x, ['allowed_classes' => false]).
+
+  - id: php-file-inclusion
+    languages: [php]
+    severity: ERROR
+    message: A file is included using request data.
+    pattern-either:
+      - pattern: include $_GET[...];
+      - pattern: include $_POST[...];
+      - pattern: include $_REQUEST[...];
+      - pattern: require $_GET[...];
+      - pattern: require $_REQUEST[...];
+      - pattern: include_once $_GET[...];
+      - pattern: require_once $_GET[...];
+      - pattern: include $A . $_GET[...] . $B;
+      - pattern: include $_GET[...] . $B;
+    metadata:
+      title: File inclusion from request data
+      brief: "The page loads a file chosen by the visitor, which can expose files or run code."
+      risk: high
+      category: injection
+      cwe: "CWE-98: PHP Remote File Inclusion"
+      owasp: "A03:2021 - Injection"
+      remediation: Map request values to a fixed list of allowed files instead of using them in paths.
+
+  - id: php-xss-echo-request
+    languages: [php]
+    severity: WARNING
+    message: Request data is echoed without escaping.
+    pattern-either:
+      - pattern: echo $_GET[...];
+      - pattern: echo $_POST[...];
+      - pattern: echo $_REQUEST[...];
+      - pattern: print($_GET[...]);
+      - pattern: echo $A . $_GET[...] . $B;
+      - pattern: echo $A . $_GET[...];
+    metadata:
+      title: Cross-site scripting (unescaped output)
+      brief: "Visitor input is written into the page unescaped, letting an attacker inject scripts."
+      risk: medium
+      category: injection
+      cwe: "CWE-79: Cross-site Scripting"
+      owasp: "A03:2021 - Injection"
+      remediation: Escape output with htmlspecialchars($value, ENT_QUOTES, 'UTF-8') or use a templating engine.
+
+  - id: php-tls-verification-disabled
+    languages: [php]
+    severity: ERROR
+    message: cURL certificate verification is disabled.
+    pattern-either:
+      - pattern: curl_setopt($CH, CURLOPT_SSL_VERIFYPEER, false)
+      - pattern: curl_setopt($CH, CURLOPT_SSL_VERIFYPEER, 0)
+      - pattern: curl_setopt($CH, CURLOPT_SSL_VERIFYHOST, 0)
+      - pattern: curl_setopt($CH, CURLOPT_SSL_VERIFYHOST, false)
+    metadata:
+      title: TLS certificate verification disabled
+      brief: "SSL certificate checks are turned off, so traffic can be intercepted."
+      risk: high
+      category: transport
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Keep VERIFYPEER on and VERIFYHOST at 2; set CURLOPT_CAINFO for private CAs.
+
+  - id: php-weak-hash
+    languages: [php]
+    severity: WARNING
+    message: md5() / sha1() is used.
+    pattern-either:
+      - pattern: md5(...)
+      - pattern: sha1(...)
+    metadata:
+      title: Weak hash algorithm (MD5 / SHA-1)
+      brief: "MD5 or SHA-1 is used, which attackers can break or forge."
+      risk: medium
+      category: crypto
+      cwe: "CWE-328: Use of Weak Hash"
+      owasp: "A02:2021 - Cryptographic Failures"
+      remediation: Use password_hash() for passwords and hash('sha256', ...) for integrity.

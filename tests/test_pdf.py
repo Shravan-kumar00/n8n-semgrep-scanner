@@ -38,7 +38,7 @@ def test_pdf_download(client, uncompressed):
     res = client.post("/api/report.pdf", json={"workflow": SAMPLE.read_text()})
     assert res.status_code == 200, res.text
     assert res.headers["content-type"] == "application/pdf"
-    assert res.headers["content-disposition"].startswith('attachment; filename="n8n-security-report-sample-insecure-order-sync')
+    assert res.headers["content-disposition"].startswith('attachment; filename="security-report-sample-insecure-order-sync')
     assert res.content.startswith(b"%PDF")
 
     text = pdf_text(res.content)

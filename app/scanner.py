@@ -1,14 +1,15 @@
 """Semgrep execution and result parsing.
 
 Security properties of a scan:
-  * The workflow is written to a private temp dir (0700) as a 0600 file and the
-    whole directory is deleted when the scan finishes, success or failure.
+  * The uploaded workflow / file is written to a private temp dir (0700) as a
+    0600 file under a fixed name chosen by the server (never the uploaded
+    name), and the whole directory is deleted when the scan finishes.
   * Semgrep is invoked with an argument list (never a shell), local rules only,
     metrics and version checks disabled, and a minimal environment.
   * The process runs in its own process group so a timeout kills Semgrep and
     every helper it spawned (semgrep-core).
   * Concurrency is bounded per worker; excess requests are rejected with 429.
-  * Workflow contents are never logged.
+  * Scanned contents are never logged.
 """
 
 from __future__ import annotations
@@ -24,18 +25,19 @@ import tempfile
 import textwrap
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .config import Settings
 from .graph import analyze_workflow
+from .languages import LANGUAGES, Language
 from .models import RISK_ORDER, Finding, ScanProfile, ScanResponse, ScanSummary
 from .workflow import NormalizedWorkflow
 
 logger = logging.getLogger(__name__)
 
 SECRETS_CATEGORY = "secrets"  # rules in this category form the "credentials" profile
-TARGET_FILENAME = "workflow.json"  # .json extension -> Semgrep's JSON parser
 MAX_SNIPPET_LINES = 15
 MAX_SNIPPET_LINE_CHARS = 300
 MAX_WARNINGS = 20
@@ -56,6 +58,17 @@ class ScannerBusyError(ScanError):
     pass
 
 
+@dataclass(frozen=True)
+class ScanTarget:
+    """What to scan: the text, its language and the file name Semgrep sees."""
+
+    language: Language
+    text: str
+    target_filename: str            # chosen by the server (see languages.target_filename)
+    display_name: str | None        # workflow name or uploaded file name, for reports
+    workflow: NormalizedWorkflow | None = None  # n8n only
+
+
 class SemgrepScanner:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -67,6 +80,10 @@ class SemgrepScanner:
         """Fail fast at startup if semgrep or the rules are missing."""
         if not self.settings.rules_path.exists():
             raise RuntimeError(f"Semgrep rules not found at {self.settings.rules_path}")
+        for lang in LANGUAGES.values():
+            for rule_file in lang.rule_files:
+                if not (self.settings.rules_path / rule_file).exists():
+                    raise RuntimeError(f"Rules for {lang.label} missing: {rule_file}")
         try:
             proc = subprocess.run(
                 [self.settings.semgrep_bin, "--version"],
@@ -80,15 +97,19 @@ class SemgrepScanner:
             raise RuntimeError(f"Unable to run semgrep ({self.settings.semgrep_bin}): {exc}") from exc
         self.version = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else "unknown"
 
-    def count_rules(self) -> int:
-        path = self.settings.rules_path
-        files = [path] if path.is_file() else [*path.rglob("*.yml"), *path.rglob("*.yaml")]
+    def count_rules(self, rule_files: tuple[str, ...] | None = None) -> int:
+        """Rules in the given files/dirs (relative to rules_path), or all rules."""
+        root = self.settings.rules_path
+        paths = [root / f for f in rule_files] if rule_files else [root]
+        files: set[Path] = set()
+        for p in paths:
+            files.update([p] if p.is_file() else [*p.rglob("*.yml"), *p.rglob("*.yaml")])
         pattern = re.compile(r"^\s*-\s+id:\s*\S", re.MULTILINE)
         return sum(len(pattern.findall(f.read_text(encoding="utf-8"))) for f in files)
 
     # ------------------------------------------------------------------- scan
-    async def scan(self, workflow: NormalizedWorkflow, profile: ScanProfile = "full") -> ScanResponse:
-        """Scan a normalized workflow. Raises ScanError subclasses on failure.
+    async def scan(self, target: ScanTarget, profile: ScanProfile = "full") -> ScanResponse:
+        """Scan a workflow or source file. Raises ScanError subclasses on failure.
 
         profile="credentials" reports only rules with metadata.category
         "secrets" (hardcoded passwords, tokens, keys, credentials in URLs).
@@ -101,28 +122,35 @@ class SemgrepScanner:
         scan_id = uuid.uuid4().hex
         started = time.monotonic()
         try:
-            raw = await asyncio.to_thread(self._scan_in_tempdir, workflow.text, scan_id)
+            configs = [self.settings.rules_path / f for f in target.language.rule_files]
+            raw = await asyncio.to_thread(self._scan_in_tempdir, target, scan_id, configs)
         finally:
             self._slots.release()
 
-        findings, warnings = self._parse_results(raw, workflow)
+        findings, warnings = self._parse_results(raw, target)
+        workflow = target.workflow
+        data_flows = []
         if profile == "credentials":
             findings = [f for f in findings if f.category == SECRETS_CATEGORY]
-            data_flows = []
-        else:
+        elif workflow is not None:
             graph_findings, data_flows = analyze_workflow(workflow)
             findings = sorted(
                 findings + graph_findings,
                 key=lambda f: (RISK_ORDER.index(f.risk), f.start_line, f.rule_id),
             )
         duration_ms = int((time.monotonic() - started) * 1000)
-        logger.info("scan %s (%s) finished: %d findings in %d ms", scan_id, profile, len(findings), duration_ms)
+        logger.info("scan %s (%s, %s) finished: %d findings in %d ms",
+                    scan_id, target.language.id, profile, len(findings), duration_ms)
 
         return ScanResponse(
             scan_id=scan_id,
             profile=profile,
-            workflow_name=workflow.name,
-            node_count=workflow.node_count,
+            language=target.language.id,
+            language_label=target.language.label,
+            target_name=target.display_name,
+            workflow_name=workflow.name if workflow else None,
+            node_count=workflow.node_count if workflow else None,
+            line_count=len(target.text.splitlines()),
             duration_ms=duration_ms,
             semgrep_version=self.version,
             summary=_summarize(findings),
@@ -131,30 +159,31 @@ class SemgrepScanner:
             warnings=warnings,
         )
 
-    def _scan_in_tempdir(self, text: str, scan_id: str) -> dict[str, Any]:
+    def _scan_in_tempdir(self, target: ScanTarget, scan_id: str, configs: list[Path]) -> dict[str, Any]:
         # mkdtemp creates the directory with mode 0700; it is removed on exit
         # from the `with` block even if semgrep fails or times out.
-        with tempfile.TemporaryDirectory(prefix=f"n8n-scan-{scan_id[:8]}-") as tmp:
+        with tempfile.TemporaryDirectory(prefix=f"scan-{scan_id[:8]}-") as tmp:
             tmp_path = Path(tmp)
             target_dir = tmp_path / "target"
             home_dir = tmp_path / "home"  # semgrep writes ~/.semgrep here, not in the image
             target_dir.mkdir(mode=0o700)
             home_dir.mkdir(mode=0o700)
 
-            target = target_dir / TARGET_FILENAME
+            path = target_dir / target.target_filename
             # O_EXCL: fail rather than follow a pre-existing file/symlink.
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(text)
+            # newline="" keeps the file's own line endings so line numbers match.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+                fh.write(target.text)
 
-            return self._run_semgrep(target, home_dir)
+            return self._run_semgrep(path, home_dir, configs)
 
-    def _run_semgrep(self, target: Path, home_dir: Path) -> dict[str, Any]:
+    def _run_semgrep(self, target: Path, home_dir: Path, configs: list[Path]) -> dict[str, Any]:
         s = self.settings
-        cmd = [
-            s.semgrep_bin,
-            "scan",
-            "--config", str(s.rules_path),
+        cmd = [s.semgrep_bin, "scan"]
+        for config in configs:
+            cmd += ["--config", str(config)]
+        cmd += [
             "--json",
             "--quiet",
             "--metrics", "off",
@@ -218,17 +247,15 @@ class SemgrepScanner:
         }
 
     # ---------------------------------------------------------------- parsing
-    def _parse_results(
-        self, data: dict[str, Any], workflow: NormalizedWorkflow
-    ) -> tuple[list[Finding], list[str]]:
-        lines = workflow.text.splitlines()
-        raw_bytes = workflow.text.encode("utf-8")  # semgrep offsets are byte offsets
+    def _parse_results(self, data: dict[str, Any], target: ScanTarget) -> tuple[list[Finding], list[str]]:
+        lines = target.text.splitlines()
+        raw_bytes = target.text.encode("utf-8")  # semgrep offsets are byte offsets
         findings: list[Finding] = []
         seen: set[tuple[str, int, int]] = set()
 
         for result in data.get("results", []):
             try:
-                finding = _to_finding(result, lines, raw_bytes, workflow)
+                finding = _to_finding(result, lines, raw_bytes, target)
             except (KeyError, TypeError, ValueError):
                 logger.exception("skipping malformed semgrep result")
                 continue
@@ -244,7 +271,7 @@ class SemgrepScanner:
         for err in data.get("errors", [])[:MAX_WARNINGS]:
             message = str(err.get("message", "unknown error"))
             # Don't expose server temp paths to the client.
-            message = re.sub(r"/\S*/" + re.escape(TARGET_FILENAME), TARGET_FILENAME, message)
+            message = re.sub(r"/\S*/target/", "", message)
             warnings.append(f"{err.get('type', 'Error')}: {message[:300]}")
         return findings, warnings
 
@@ -256,27 +283,28 @@ def _drop_nested_secret_findings(findings: list[Finding]) -> list[Finding]:
     Several secret rules can fire on the same value, e.g. the name/value rule
     matches a whole {"name": "Authorization", "value": "Basic ..."} object
     while the Bearer/Basic rule matches the value line inside it. A secrets
-    finding is dropped when another secrets finding of equal or higher risk
-    covers a strictly larger line range around it.
+    finding is dropped when another secrets finding covers its line range and
+    is either more severe, or equally severe and spans a strictly larger range
+    (e.g. a generic "password = '...'" match next to the more specific
+    "AWS access key" match on the same line keeps only the latter).
     """
     secrets = [f for f in findings if f.category == SECRETS_CATEGORY]
 
     def covered(inner: Finding) -> bool:
-        return any(
-            outer is not inner
-            and outer.start_line <= inner.start_line
-            and inner.end_line <= outer.end_line
-            and (outer.end_line - outer.start_line) > (inner.end_line - inner.start_line)
-            and RISK_ORDER.index(outer.risk) <= RISK_ORDER.index(inner.risk)
-            for outer in secrets
-        )
+        for outer in secrets:
+            if outer is inner or not (outer.start_line <= inner.start_line and inner.end_line <= outer.end_line):
+                continue
+            more_severe = RISK_ORDER.index(outer.risk) < RISK_ORDER.index(inner.risk)
+            same_risk = outer.risk == inner.risk
+            larger = (outer.end_line - outer.start_line) > (inner.end_line - inner.start_line)
+            if more_severe or (same_risk and larger):
+                return True
+        return False
 
     return [f for f in findings if f.category != SECRETS_CATEGORY or not covered(f)]
 
 
-def _to_finding(
-    result: dict[str, Any], lines: list[str], raw_bytes: bytes, workflow: NormalizedWorkflow
-) -> Finding:
+def _to_finding(result: dict[str, Any], lines: list[str], raw_bytes: bytes, target: ScanTarget) -> Finding:
     extra = result.get("extra", {})
     meta = extra.get("metadata", {}) or {}
     start = int(result["start"]["line"])
@@ -289,11 +317,16 @@ def _to_finding(
     category = str(meta.get("category", "general"))
     snippet = _snippet(lines, start, end)
     exposed_value = None
+    workflow = target.workflow
     if category == SECRETS_CATEGORY:
-        snippet = _mask_secrets(snippet)
-        exposed_value = _exposed_value(raw_bytes, result)
+        if workflow is not None:
+            snippet = _mask_secrets(snippet)
+            exposed_value = _exposed_value(raw_bytes, result)
+        else:
+            snippet = _mask_code_secrets(snippet)
+            exposed_value = _matched_text(raw_bytes, result)
 
-    node = workflow.node_at(start)
+    node = workflow.node_at(start) if workflow is not None else None
     # Semgrep prefixes rule ids with the config path ("rules.n8n-..."); keep the last part.
     rule_id = str(result["check_id"]).rsplit(".", 1)[-1]
     message = " ".join(str(extra.get("message", "")).split())
@@ -356,6 +389,18 @@ def _exposed_value(raw_bytes: bytes, result: dict[str, Any]) -> str | None:
     return value if len(value) <= MAX_EXPOSED_CHARS else value[:MAX_EXPOSED_CHARS] + "…"
 
 
+def _matched_text(raw_bytes: bytes, result: dict[str, Any]) -> str | None:
+    """The exact text Semgrep matched (source code: no unescaping needed)."""
+    try:
+        start, end = int(result["start"]["offset"]), int(result["end"]["offset"])
+        text = raw_bytes[start:end].decode("utf-8").strip()
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        return None
+    if not text:
+        return None
+    return text if len(text) <= MAX_EXPOSED_CHARS else text[:MAX_EXPOSED_CHARS] + "…"
+
+
 def _first_sentence(text: str) -> str:
     match = re.match(r"(.+?[.!?])(\s|$)", text)
     return match.group(1) if match else text
@@ -413,6 +458,31 @@ def _mask_secrets(snippet: str) -> str:
         return f'"{key}"{sep}"{_mask_value(value)}"'
 
     return _JSON_KEY_VALUE.sub(repl, snippet)
+
+
+_CODE_STRING = re.compile(r'"([^"\n]{4,})"|\'([^\'\n]{4,})\'|`([^`\n]{4,})`')
+_CONFIG_VALUE = re.compile(r"(?m)^([ \t-]*(?:export[ \t]+)?(?:ENV[ \t]+|ARG[ \t]+)?[\w.-]+[ \t]*[:=][ \t]*)([^\s\"'#`]{4,})")
+_CONN_PASSWORD = re.compile(r"(?i)((?:password|pwd)=)[^;\"'\s]+")
+
+
+def _mask_code_value(value: str) -> str:
+    if _URL_PREFIX.match(value):
+        return _mask_value(value)
+    if _CONN_PASSWORD.search(value):  # keep the connection string readable
+        return _CONN_PASSWORD.sub(r"\g<1>****", value)
+    return _mask_value(value)
+
+
+def _mask_code_secrets(snippet: str) -> str:
+    """Mask string literals and unquoted config values in a code snippet."""
+
+    def quoted(match: re.Match[str]) -> str:
+        quote = match.group(0)[0]
+        inner = next(g for g in match.groups() if g is not None)
+        return f"{quote}{_mask_code_value(inner)}{quote}"
+
+    snippet = _CODE_STRING.sub(quoted, snippet)
+    return _CONFIG_VALUE.sub(lambda m: m.group(1) + _mask_code_value(m.group(2)), snippet)
 
 
 def _summarize(findings: list[Finding]) -> ScanSummary:

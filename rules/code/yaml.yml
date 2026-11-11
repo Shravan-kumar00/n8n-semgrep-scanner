@@ -1,0 +1,94 @@
+rules:
+  - id: k8s-privileged-container
+    languages: [yaml]
+    severity: ERROR
+    message: The container runs privileged (full access to the host).
+    pattern: 'privileged: true'
+    metadata:
+      title: Privileged container
+      brief: "The container has full access to the host machine, so a break-in can take over the node."
+      risk: high
+      category: configuration
+      cwe: "CWE-250: Execution with Unnecessary Privileges"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Remove privileged; grant only the specific capabilities needed.
+
+  - id: k8s-host-namespace
+    languages: [yaml]
+    severity: ERROR
+    message: The pod shares the host's network, process or IPC namespace.
+    pattern-either:
+      - pattern: 'hostNetwork: true'
+      - pattern: 'hostPID: true'
+      - pattern: 'hostIPC: true'
+      - pattern: 'network_mode: host'
+      - pattern: 'pid: host'
+    metadata:
+      title: Host namespace shared
+      brief: "The container can see host network traffic or processes, weakening isolation."
+      risk: high
+      category: configuration
+      cwe: "CWE-250: Execution with Unnecessary Privileges"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Remove hostNetwork / hostPID / hostIPC (network_mode / pid in Compose) unless strictly required.
+
+  - id: k8s-privilege-escalation-allowed
+    languages: [yaml]
+    severity: WARNING
+    message: The container allows privilege escalation or runs as root.
+    pattern-either:
+      - pattern: 'allowPrivilegeEscalation: true'
+      - pattern: 'runAsUser: 0'
+      - pattern: 'runAsNonRoot: false'
+    metadata:
+      title: Root or privilege escalation allowed
+      brief: "The container may run as root or gain extra privileges at runtime."
+      risk: medium
+      category: configuration
+      cwe: "CWE-250: Execution with Unnecessary Privileges"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Set runAsNonRoot true, a non-zero runAsUser and allowPrivilegeEscalation false.
+
+  - id: docker-socket-mounted
+    languages: [yaml]
+    severity: ERROR
+    message: The Docker socket is mounted into a container.
+    pattern-regex: /var/run/docker\.sock
+    metadata:
+      title: Docker socket mounted
+      brief: "The container can control Docker on the host, which equals root access to the machine."
+      risk: high
+      category: configuration
+      cwe: "CWE-250: Execution with Unnecessary Privileges"
+      owasp: "A05:2021 - Security Misconfiguration"
+      remediation: Do not mount docker.sock; use a restricted socket proxy or rootless build tools.
+
+  - id: github-actions-script-injection
+    languages: [yaml]
+    severity: ERROR
+    message: Untrusted GitHub event data is interpolated into a script.
+    # Skip lines where the expression is a whole YAML value (env: / with:),
+    # which is the safe way to pass it to a script.
+    pattern-regex: (?m)^(?![ \t-]*[\w-]+:[ \t]*["']?\$\{\{[^}]*\}\}["']?[ \t]*$).*\$\{\{\s*github\.(event\.(issue|pull_request|comment|review|review_comment|discussion|head_commit|commits|pages)[^}]*\.(title|body|message|name|email|label|ref|head_ref|default_branch|page_name)|head_ref)\s*\}\}
+    metadata:
+      title: GitHub Actions script injection
+      brief: "An issue title, PR body or branch name is inserted into a script, letting anyone run code in your CI."
+      risk: high
+      category: injection
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      remediation: Pass the value through env (env TITLE ${{ github.event.issue.title }}) and use "$TITLE" in the script.
+
+  - id: github-actions-write-all
+    languages: [yaml]
+    severity: WARNING
+    message: The workflow token has write access to everything.
+    pattern: 'permissions: write-all'
+    metadata:
+      title: Over-broad workflow permissions
+      brief: "The CI token can change any part of the repository if a step is compromised."
+      risk: medium
+      category: configuration
+      cwe: "CWE-250: Execution with Unnecessary Privileges"
+      owasp: "A01:2021 - Broken Access Control"
+      remediation: Set permissions to the minimum, e.g. contents read, and grant writes per job.
