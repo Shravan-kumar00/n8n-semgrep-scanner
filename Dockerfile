@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # -----------------------------------------------------------------------------
-# n8n Workflow Security Scanner: FastAPI + Semgrep CLI in one image.
+# Workflow & Code Security Scanner: FastAPI + Semgrep CLI in one image.
 # -----------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm
 
@@ -11,10 +11,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencies first for better layer caching. The semgrep wheel bundles the
-# semgrep-core binary, so no extra system packages are required.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
+# Dependencies first for better layer caching: only pyproject.toml is copied,
+# and its pinned [project].dependencies are installed (not the package itself;
+# the app runs from /app). The semgrep wheel bundles semgrep-core, so no extra
+# system packages are required.
+COPY pyproject.toml .
+RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > /tmp/requirements.txt \
+ && pip install --no-cache-dir -r /tmp/requirements.txt \
+ && rm /tmp/requirements.txt \
  && semgrep --version \
  && rm -rf /root/.semgrep /root/.cache
 
@@ -24,7 +28,6 @@ RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin scan
 # Application code and rules are owned by root and read-only to the app user.
 COPY app ./app
 COPY rules ./rules
-COPY static ./static
 
 # Semgrep writes settings/logs under $HOME; each scan also gets its own
 # throwaway HOME inside its temp dir. /tmp is a tmpfs in docker-compose.

@@ -1,26 +1,12 @@
 """PDF report endpoint tests. These run the real semgrep binary."""
 
-import os
 import re
-import shutil
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 from reportlab import rl_config
 
-if shutil.which(os.getenv("SEMGREP_BIN", "semgrep")) is None:
-    pytest.skip("semgrep is not installed", allow_module_level=True)
-
-from app.main import app  # noqa: E402
-
-SAMPLE = Path(__file__).resolve().parent.parent / "static" / "samples" / "vulnerable-workflow.json"
-
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
+SAMPLE = Path(__file__).resolve().parent.parent / "app" / "static" / "samples" / "vulnerable-workflow.json"
 
 
 @pytest.fixture

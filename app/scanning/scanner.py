@@ -29,10 +29,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import Settings
+from ..config import Settings
 from .graph import analyze_workflow
 from .languages import LANGUAGES, Language
-from .models import RISK_ORDER, Finding, ScanProfile, ScanResponse, ScanSummary
+from ..models import RISK_ORDER, Finding, ScanProfile, ScanResponse, ScanSummary
 from .workflow import NormalizedWorkflow
 
 logger = logging.getLogger(__name__)

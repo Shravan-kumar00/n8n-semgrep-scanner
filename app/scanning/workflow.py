@@ -34,7 +34,7 @@ class NormalizedWorkflow:
     name: str | None
     node_count: int
     node_spans: list[NodeSpan]
-    # Parsed workflow, used by the connection-graph analysis (app/graph.py).
+    # Parsed workflow, used by the connection-graph analysis (app/scanning/graph.py).
     data: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     def node_at(self, line: int) -> NodeSpan | None:

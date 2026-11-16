@@ -1,22 +1,15 @@
 """Multi-language scanning: every language's sample is fully detected and its
 safe counterpart produces no findings. These run the real semgrep binary."""
 
-import os
-import shutil
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app.languages import LANGUAGES, target_filename
+from app.scanning.languages import LANGUAGES, target_filename
 
-if shutil.which(os.getenv("SEMGREP_BIN", "semgrep")) is None:
-    pytest.skip("semgrep is not installed", allow_module_level=True)
-
-from app.main import app  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-SAMPLES = ROOT / "static" / "samples"
+SAMPLES = ROOT / "app" / "static" / "samples"
 SAFE = Path(__file__).resolve().parent / "fixtures" / "safe"
 
 EXPECTED = {
@@ -79,12 +72,6 @@ SAFE_FILES = {
     "php": "safe.php", "ruby": "safe.rb", "bash": "safe.sh", "dockerfile": "Dockerfile", "yaml": "safe.yaml",
     "terraform": "safe.tf",
 }
-
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
 
 
 def scan(client, language, path, **extra):

@@ -1,7 +1,7 @@
 services:
   scanner:
     build: .
-    image: n8n-semgrep-scanner:1.0.0
+    image: n8n-semgrep-scanner:1.1.0
     container_name: n8n-semgrep-scanner
     # Bound to localhost only. Put a reverse proxy with TLS + SSO in front
     # before exposing this to your team network (see README).

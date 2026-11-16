@@ -13,38 +13,36 @@ The language is detected automatically from the uploaded file name, and you can 
 
 > **A first line of review, not a replacement for one.** The scanner catches known patterns quickly and consistently. It does not understand business context and cannot find every vulnerability. Use it to point reviewers at the riskiest areas, and keep your normal security review and approval process.
 
+## Repository layout
+
 ```
 n8n-semgrep-scanner/
-├── app/
-│   ├── __init__.py
-│   ├── config.py        # env-driven settings (limits, timeouts, paths)
-│   ├── models.py        # Pydantic request/response schemas
-│   ├── languages.py     # supported languages: extensions, rule files, samples
-│   ├── workflow.py      # n8n JSON validation, normalization, line -> node index
-│   ├── scanner.py       # temp file handling, semgrep subprocess, result parsing
-│   ├── graph.py         # connection-graph checks (AI agents, endpoints) + data-flow inventory
-│   ├── pdf_report.py    # PDF report (ReportLab): findings only, grouped by severity
-│   └── main.py          # FastAPI app, routes, body-size limit, security headers
-├── rules/
-│   ├── n8n/             # 27 rules for n8n workflow JSON
-│   ├── code/            # one rule file per language (python.yml, java.yml, terraform.yml, …)
-│   └── common/          # secret detection shared by all code / config languages
-├── static/
-│   ├── index.html       # Tailwind single-page UI
-│   ├── app.js           # submit, report rendering, HTML / Markdown / JSON export
-│   └── samples/         # n8n samples + code/ (one intentionally vulnerable file per language)
-├── tests/
-│   ├── fixtures/credential-cases.json  # n8n credential leaks that must / must not be flagged
-│   ├── fixtures/safe/   # safe file per language: must produce no findings
-│   ├── test_workflow.py # parser/normalizer unit tests
-│   ├── test_graph.py    # connection-graph analysis unit tests
-│   ├── test_pdf.py      # PDF report endpoint tests
-│   ├── test_languages.py # every language: sample fully detected, safe file clean
-│   └── test_api.py      # end-to-end tests against real semgrep
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-└── requirements-dev.txt
+├── pyproject.toml          # the only dependency / packaging / pytest config file
+├── Dockerfile              # FastAPI + Semgrep image (non-root, read-only friendly)
+├── docker-compose.yml      # hardened runtime settings
+├── app/                    # Python package
+│   ├── main.py             # FastAPI entrypoint: routes, body-size limit, security headers
+│   ├── config.py           # settings from environment variables
+│   ├── models.py           # API request / response schemas
+│   ├── scanning/           # everything that produces findings
+│   │   ├── languages.py    # supported languages: extensions, rule files, samples
+│   │   ├── scanner.py      # temp files, Semgrep subprocess, result parsing, masking
+│   │   ├── workflow.py     # n8n JSON validation, normalisation, line -> node index
+│   │   └── graph.py        # n8n connection checks (AI agents, endpoints) + data flows
+│   ├── reports/
+│   │   └── pdf.py          # PDF report (ReportLab)
+│   └── static/             # web UI, served at /static
+│       ├── index.html
+│       ├── app.js          # rendering + HTML / Markdown / JSON export
+│       └── samples/        # n8n samples + code/ (one vulnerable file per language)
+├── rules/                  # all Semgrep rules (see rules/README.md for conventions)
+│   ├── n8n/workflow.yml
+│   ├── code/<language>.yml
+│   └── common/secrets.yml, config-secrets.yml
+└── tests/
+    ├── conftest.py         # shared client fixture; skips Semgrep tests if it is missing
+    ├── fixtures/           # credential, tuning and per-language safe cases
+    └── test_*.py           # api, languages, pdf, graph, workflow
 ```
 
 ## Run
@@ -67,10 +65,12 @@ docker compose up -d --build
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"
 uvicorn app.main:app --reload
 pytest
 ```
+
+All dependencies are pinned in `pyproject.toml`: runtime ones under `[project].dependencies` and test tools under the `dev` extra. The Docker image installs only the runtime set.
 
 ## Using the UI
 
@@ -169,7 +169,7 @@ Each language runs its own rule file in `rules/code/` plus the shared secret rul
 | YAML | `code/yaml.yml` | Privileged containers, host network / PID / IPC, root or privilege escalation, Docker socket mounts, GitHub Actions script injection and `write-all` permissions |
 | Terraform | `code/terraform.yml` | Public buckets, `0.0.0.0/0` ingress, wildcard IAM actions, publicly accessible databases, encryption disabled |
 
-Every language has an intentionally vulnerable sample in `static/samples/code/` and a safe counterpart in `tests/fixtures/safe/`. `tests/test_languages.py` checks that every rule fires on the sample and that nothing fires on the safe file. When you add a rule, add a case to both.
+Every language has an intentionally vulnerable sample in `app/static/samples/code/` and a safe counterpart in `tests/fixtures/safe/`. `tests/test_languages.py` checks that every rule fires on the sample and that nothing fires on the safe file. When you add a rule, add a case to both. Naming and metadata conventions are in `rules/README.md`.
 
 These rules are pattern based: they flag risky code, they don't trace whether the data really comes from a user. Treat a finding as "review this line", not as proof of an exploit.
 
@@ -196,7 +196,7 @@ These rules are pattern based: they flag risky code, they don't trace whether th
 
 ### n8n: AI agents
 
-The checks marked *graph* follow the workflow's connections (in `app/graph.py`) rather than matching a single node. An agent's **untrusted input** is any of these:
+The checks marked *graph* follow the workflow's connections (in `app/scanning/graph.py`) rather than matching a single node. An agent's **untrusted input** is any of these:
 
 - an unauthenticated webhook, form, chat or MCP trigger upstream
 - an Outlook / Teams / Gmail / Slack trigger upstream
@@ -311,4 +311,4 @@ To add a rule, add an entry to the right file under `rules/` with `metadata.titl
 | `CORS_ORIGINS` | *(empty)* | Comma-separated allow-list; empty = same-origin only |
 | `ENABLE_DOCS` | false | Expose `/docs` (Swagger UI) |
 
-The static UI assumes the default 2 MB limit (`MAX_BYTES` in `static/app.js`); keep it in sync if you change `MAX_PAYLOAD_BYTES`.
+The static UI assumes the default 2 MB limit (`MAX_BYTES` in `app/static/app.js`); keep it in sync if you change `MAX_PAYLOAD_BYTES`.

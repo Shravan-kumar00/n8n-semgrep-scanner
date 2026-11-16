@@ -54,7 +54,7 @@ class Settings:
     enable_docs: bool = field(
         default_factory=lambda: os.getenv("ENABLE_DOCS", "false").lower() in {"1", "true", "yes"}
     )
-    static_dir: Path = PROJECT_ROOT / "static"
+    static_dir: Path = Path(__file__).resolve().parent / "static"
 
 
 @lru_cache

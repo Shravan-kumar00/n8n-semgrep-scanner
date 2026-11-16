@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .languages import LANGUAGES
+from .scanning.languages import LANGUAGES
 
 Risk = Literal["critical", "high", "medium", "low", "info"]
 # "full" = every rule; "credentials" = only secret / password / token rules.
@@ -70,7 +70,7 @@ class Finding(BaseModel):
     node_name: str | None = None
     node_type: str | None = None
     # "semgrep" = pattern rule; "workflow-graph" = found by following node
-    # connections (app/graph.py). For graph findings `snippet` holds evidence.
+    # connections (app/scanning/graph.py). For graph findings `snippet` holds evidence.
     source: Literal["semgrep", "workflow-graph"] = "semgrep"
 
 

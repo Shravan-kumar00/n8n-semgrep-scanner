@@ -17,11 +17,11 @@ from pydantic import ValidationError
 
 from . import __version__
 from .config import Settings, get_settings
-from .languages import LANGUAGES, target_filename
+from .scanning.languages import LANGUAGES, target_filename
 from .models import ErrorResponse, HealthResponse, LanguageInfo, PdfReportRequest, ScanRequest, ScanResponse
-from .pdf_report import build_pdf
-from .scanner import ScanError, ScannerBusyError, ScanTarget, ScanTimeoutError, SemgrepScanner
-from .workflow import WorkflowValidationError, normalize_workflow, parse_workflow
+from .reports.pdf import build_pdf
+from .scanning.scanner import ScanError, ScannerBusyError, ScanTarget, ScanTimeoutError, SemgrepScanner
+from .scanning.workflow import WorkflowValidationError, normalize_workflow, parse_workflow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("n8n_scanner")

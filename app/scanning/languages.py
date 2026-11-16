@@ -22,7 +22,7 @@ class Language:
     rule_files: tuple[str, ...]
     default_target: str             # file name written for Semgrep
     filenames: tuple[str, ...] = () # exact names, e.g. Dockerfile
-    sample: str | None = None       # path under /static/samples/
+    sample: str | None = None       # path under app/static/samples/ (served at /static/samples/)
 
     @property
     def is_workflow(self) -> bool:

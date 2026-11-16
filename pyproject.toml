@@ -1,0 +1,40 @@
+# Single source of truth for dependencies, packaging and tool settings.
+#   Run locally:   pip install -e ".[dev]"   then   uvicorn app.main:app --reload
+#   Docker:        the Dockerfile installs [project].dependencies only.
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "workflow-code-security-scanner"
+dynamic = ["version"]
+description = "Semgrep-based security scanner for n8n workflows, source code and infrastructure files, with a FastAPI web UI."
+readme = "README.md"
+requires-python = ">=3.10"
+# Pinned for reproducible container builds.
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.54.0",
+    "semgrep==1.183.0",
+    "reportlab==5.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "httpx==0.28.1",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "app.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["static/*", "static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"

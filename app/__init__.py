@@ -1,3 +1,3 @@
-"""n8n Workflow Security Scanner - FastAPI + Semgrep."""
+"""Workflow & Code Security Scanner - FastAPI + Semgrep."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

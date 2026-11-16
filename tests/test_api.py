@@ -1,28 +1,14 @@
 """End-to-end API tests. These run the real semgrep binary."""
 
 import json
-import os
-import shutil
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
-if shutil.which(os.getenv("SEMGREP_BIN", "semgrep")) is None:
-    pytest.skip("semgrep is not installed", allow_module_level=True)
-
-from app.main import app  # noqa: E402
-
-SAMPLE = Path(__file__).resolve().parent.parent / "static" / "samples" / "vulnerable-workflow.json"
+SAMPLE = Path(__file__).resolve().parent.parent / "app" / "static" / "samples" / "vulnerable-workflow.json"
 AI_SAMPLE = SAMPLE.with_name("ai-agents-m365-workflow.json")
 CREDENTIAL_CASES = Path(__file__).resolve().parent / "fixtures" / "credential-cases.json"
 TUNING_CASES = Path(__file__).resolve().parent / "fixtures" / "tuning-cases.json"
-
-
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:  # runs lifespan -> semgrep version check
-        yield c
 
 
 def scan(client, workflow: str):

@@ -2,8 +2,8 @@
 
 import json
 
-from app.graph import analyze_workflow
-from app.workflow import normalize_workflow, parse_workflow
+from app.scanning.graph import analyze_workflow
+from app.scanning.workflow import normalize_workflow, parse_workflow
 
 
 def analyze(nodes, connections):

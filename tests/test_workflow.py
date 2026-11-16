@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.workflow import WorkflowValidationError, normalize_workflow, parse_workflow
+from app.scanning.workflow import WorkflowValidationError, normalize_workflow, parse_workflow
 
 
 @pytest.mark.parametrize(

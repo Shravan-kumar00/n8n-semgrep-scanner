@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
-from .models import DataFlow, Finding
+from ..models import DataFlow, Finding
 from .workflow import NormalizedWorkflow
 
 LANGCHAIN_PREFIX = "@n8n/n8n-nodes-langchain."

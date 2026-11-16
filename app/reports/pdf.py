@@ -22,7 +22,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .models import RISK_ORDER, Finding, ScanResponse
+from ..models import RISK_ORDER, Finding, ScanResponse
 
 SEVERITY = {
     "critical": ("Critical", colors.HexColor("#DC2626"), colors.HexColor("#FEF2F2")),
