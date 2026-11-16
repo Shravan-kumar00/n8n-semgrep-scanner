@@ -286,6 +286,7 @@ To add a rule, add an entry to the right file under `rules/` with `metadata.titl
   - Internal errors return a generic message.
 - **Browser:**
   - Responses carry CSP, `X-Frame-Options: DENY`, `nosniff` and `no-referrer` headers.
+  - The page and its script are sent with `Cache-Control: no-cache`, so browsers check for a newer version on every load (a cheap 304 when nothing changed) and never mix an old `app.js` with a new page after an upgrade.
   - The UI inserts all scan data with `textContent`, never `innerHTML`.
 - **Container:**
   - The app runs as a non-root user (UID 10001) on a read-only root filesystem.

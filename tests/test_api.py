@@ -255,3 +255,10 @@ def test_index_has_security_headers(client):
     assert res.status_code == 200
     assert "frame-ancestors 'none'" in res.headers["content-security-policy"]
     assert res.headers["x-content-type-options"] == "nosniff"
+
+
+def test_ui_files_are_always_revalidated(client):
+    # Browsers must never mix a cached app.js with a newer index.html.
+    for path in ("/", "/static/index.html", "/static/app.js"):
+        assert client.get(path).headers["cache-control"] == "no-cache", path
+    assert "cache-control" not in client.get("/static/samples/code/vulnerable.py").headers

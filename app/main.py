@@ -91,6 +91,10 @@ async def security_headers(request: Request, call_next):
     if request.url.path.startswith("/api/"):
         # Scan results may contain sensitive configuration: never cache them.
         response.headers["Cache-Control"] = "no-store"
+    elif request.url.path == "/" or request.url.path.endswith((".html", ".js")):
+        # Always revalidate the UI (cheap: ETag / 304) so a browser never runs
+        # an old app.js against a new index.html after an upgrade.
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 
