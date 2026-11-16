@@ -56,9 +56,24 @@
       "parameters": { "url": "https://hooks.example.com/notify?token=9f8e7d6c5b4aQx72Lm" }
     },
     {
-      "name": "LOW - Internal conversion API",
+      "name": "SUPPRESS - Conversion API in trusted subnet",
       "type": "n8n-nodes-base.httpRequest",
       "parameters": { "url": "http://10.0.12.187:8080/forms/libreoffice/convert", "method": "POST" }
+    },
+    {
+      "name": "LOW - Other private subnet",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": { "url": "http://10.0.50.20:9000/api/render" }
+    },
+    {
+      "name": "Upload 500 Subscribers",
+      "type": "n8n-nodes-base.formTrigger",
+      "parameters": { "formTitle": "Upload 500 Subscribers", "formFields": { "values": [{ "fieldLabel": "CSV", "fieldType": "file" }] } }
+    },
+    {
+      "name": "FLAG - Public webhook",
+      "type": "n8n-nodes-base.webhook",
+      "parameters": { "httpMethod": "POST", "path": "subscribe", "options": {} }
     },
     {
       "name": "LOW - Docker service name",

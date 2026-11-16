@@ -29,6 +29,22 @@ def _list_env(name: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _networks_env(name: str, default: str) -> tuple:
+    from .scanning.policy import parse_networks
+
+    try:
+        return parse_networks(os.getenv(name, default))
+    except ValueError as exc:
+        raise RuntimeError(f"Environment variable {name} must be comma-separated CIDRs: {exc}") from exc
+
+
 @dataclass(frozen=True)
 class Settings:
     # Path (or name on $PATH) of the semgrep executable.
@@ -54,6 +70,11 @@ class Settings:
     enable_docs: bool = field(
         default_factory=lambda: os.getenv("ENABLE_DOCS", "false").lower() in {"1", "true", "yes"}
     )
+    # Tuning policy (app/scanning/policy.py). Plain HTTP into these subnets
+    # is accepted; other private ranges are still reported as low risk.
+    trusted_networks: tuple = field(default_factory=lambda: _networks_env("TRUSTED_NETWORKS", "10.0.12.0/24"))
+    # n8n Form Triggers are protected by our internal submission flow.
+    trust_form_triggers: bool = field(default_factory=lambda: _bool_env("TRUST_FORM_TRIGGERS", True))
     static_dir: Path = Path(__file__).resolve().parent / "static"
 
 

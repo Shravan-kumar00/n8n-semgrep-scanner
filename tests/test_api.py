@@ -131,13 +131,11 @@ def test_ai_and_integration_findings(client):
         ("ai-mcp-server-without-auth", "MCP Server"),
         # Outlook / Teams / monday.com
         ("endpoint-returns-internal-data", "Lookup Webhook"),
-        ("endpoint-writes-business-systems", "Intake Form"),
         ("bulk-record-forwarded", "Post to Teams"),
         ("email-recipient-from-request", "Notify Requester"),
         ("email-hidden-bcc", "Notify Requester"),
         ("teams-webhook-url-exposed", "Teams Alert"),
         ("webhook-without-authentication", "Lookup Webhook"),
-        ("webhook-without-authentication", "Intake Form"),
     }
     by_rule = {f["rule_id"]: f for f in body["findings"]}
     trifecta = by_rule["n8n-ai-prompt-injection-exfiltration"]
@@ -170,19 +168,28 @@ def test_only_secret_findings_expose_values(client):
 
 def test_rule_tuning_decisions(client):
     """Agreed tuning: trusted SQL date windows, URL placeholders, internal
-    HTTP, bulk reads and pinned data. Node names say what is expected."""
+    HTTP, trusted subnets and form triggers, bulk reads and pinned data.
+    Node names say what is expected."""
     body = scan(client, TUNING_CASES.read_text()).json()
     found = {(f["node_name"], f["rule_id"].removeprefix("n8n-"), f["risk"]) for f in body["findings"]}
     assert found == {
         ("FLAG - Customer lookup (SQL)", "sql-injection-via-expression", "high"),
         ("FLAG - Window plus user input (SQL)", "sql-injection-via-expression", "high"),
         ("FLAG - Real token in URL", "credentials-in-url", "high"),
-        ("LOW - Internal conversion API", "cleartext-http-internal", "low"),
+        ("FLAG - Public webhook", "webhook-without-authentication", "medium"),
+        ("LOW - Other private subnet", "cleartext-http-internal", "low"),
         ("LOW - Docker service name", "cleartext-http-internal", "low"),
         ("LOW - Internal DNS", "cleartext-http-internal", "low"),
         ("MEDIUM - Public HTTP", "cleartext-http-url", "medium"),
     }
-    assert not any(name.startswith("IGNORE") for name, _, _ in found)
+    assert not any(name.startswith(("IGNORE", "SUPPRESS", "Upload")) for name, _, _ in found)
+    # Policy suppressions are reported, not silently dropped.
+    suppressed = {(s["node_name"], s["rule_id"].removeprefix("n8n-")): s["reason"] for s in body["suppressed"]}
+    assert suppressed == {
+        ("SUPPRESS - Conversion API in trusted subnet", "cleartext-http-internal"): "Plain HTTP inside trusted network 10.0.12.0/24",
+        ("Upload 500 Subscribers", "webhook-without-authentication"): "Form trigger trusted by policy (TRUST_FORM_TRIGGERS)",
+    }
+    assert body["summary"]["total"] == len(body["findings"])
 
 
 def test_unknown_profile_rejected(client):

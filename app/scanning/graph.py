@@ -101,6 +101,7 @@ class Node:
     params: dict[str, Any]
     kind: str = ""
     is_trigger: bool = False
+    trusted: bool = False  # trusted entry point by policy (e.g. Form Trigger)
     tool_of: list[str] = field(default_factory=list)   # agents this node is a tool for
     model_of: list[str] = field(default_factory=list)  # agents/chains this node is the LLM / embeddings for
 
@@ -149,7 +150,7 @@ def _llm_provider(kind: str) -> str | None:
 
 
 class WorkflowGraph:
-    def __init__(self, data: dict[str, Any]) -> None:
+    def __init__(self, data: dict[str, Any], trust_form_triggers: bool = False) -> None:
         self.nodes: dict[str, Node] = {}
         for raw in data.get("nodes", []):
             name, node_type = raw.get("name"), raw.get("type")
@@ -157,7 +158,8 @@ class WorkflowGraph:
                 continue
             params = raw.get("parameters") if isinstance(raw.get("parameters"), dict) else {}
             kind, is_trigger = _kind(node_type)
-            self.nodes[name] = Node(name, node_type, params, kind, is_trigger)
+            trusted = trust_form_triggers and kind == "formTrigger"
+            self.nodes[name] = Node(name, node_type, params, kind, is_trigger, trusted)
 
         self.downstream: dict[str, set[str]] = {n: set() for n in self.nodes}
         self.upstream: dict[str, set[str]] = {n: set() for n in self.nodes}
@@ -212,6 +214,8 @@ def _targets(branches: Any) -> Iterable[str]:
 # --------------------------------------------------------------- classifiers
 def _unauthenticated_endpoint(node: Node) -> bool:
     """Webhook / form / chat / MCP trigger that anyone can call."""
+    if node.trusted:
+        return False
     auth = node.params.get("authentication")
     no_auth = auth in (None, "", "none")
     if node.kind == "chatTrigger":
@@ -265,8 +269,10 @@ def _returns_response(graph: WorkflowGraph, trigger: Node, reachable: set[str]) 
 
 
 # ------------------------------------------------------------------- checks
-def analyze_workflow(workflow: NormalizedWorkflow) -> tuple[list[Finding], list[DataFlow]]:
-    graph = WorkflowGraph(workflow.data)
+def analyze_workflow(
+    workflow: NormalizedWorkflow, trust_form_triggers: bool = False
+) -> tuple[list[Finding], list[DataFlow]]:
+    graph = WorkflowGraph(workflow.data, trust_form_triggers)
     findings: list[Finding] = []
     findings += _check_agents(graph, workflow)
     findings += _check_endpoints(graph, workflow)

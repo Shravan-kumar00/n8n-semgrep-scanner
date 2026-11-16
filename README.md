@@ -19,7 +19,7 @@ The language is detected automatically from the uploaded file name, and you can 
 n8n-semgrep-scanner/
 ├── pyproject.toml          # the only dependency / packaging / pytest config file
 ├── Dockerfile              # FastAPI + Semgrep image (non-root, read-only friendly)
-├── docker-compose.yml      # hardened runtime settings
+├── docker-compose.yml      # hardened runtime settings and tuning env vars
 ├── app/                    # Python package
 │   ├── main.py             # FastAPI entrypoint: routes, body-size limit, security headers
 │   ├── config.py           # settings from environment variables
@@ -27,6 +27,7 @@ n8n-semgrep-scanner/
 │   ├── scanning/           # everything that produces findings
 │   │   ├── languages.py    # supported languages: extensions, rule files, samples
 │   │   ├── scanner.py      # temp files, Semgrep subprocess, result parsing, masking
+│   │   ├── policy.py       # tuning policy: trusted networks, trusted form triggers
 │   │   ├── workflow.py     # n8n JSON validation, normalisation, line -> node index
 │   │   └── graph.py        # n8n connection checks (AI agents, endpoints) + data flows
 │   ├── reports/
@@ -42,7 +43,7 @@ n8n-semgrep-scanner/
 └── tests/
     ├── conftest.py         # shared client fixture; skips Semgrep tests if it is missing
     ├── fixtures/           # credential, tuning and per-language safe cases
-    └── test_*.py           # api, languages, pdf, graph, workflow
+    └── test_*.py           # api, languages, pdf, policy, graph, workflow
 ```
 
 ## Run
@@ -96,6 +97,7 @@ All dependencies are pinned in `pyproject.toml`: runtime ones under `[project].d
 | **Fix these first** | The top 5 critical / high issues; click one to jump to it |
 | **Risk by area** | Secrets, AI agents, Outlook/Teams/monday.com, injection, …; click one to filter |
 | **Where your data goes** *(n8n only)* | Every external service the workflow sends to, reads from or receives from: LLM providers, Microsoft 365, monday.com, HTTP hosts. Each row names the node and whether it's an AI tool, AI model, trigger or normal step |
+| **Hidden by tuning policy** | Findings suppressed by `TRUSTED_NETWORKS` / `TRUST_FORM_TRIGGERS`, each with its reason (collapsed; also included in HTML, Markdown and PDF) |
 | **All findings** | Grouped by area, severity or node (n8n). Each one has *What's wrong* and *How to fix*, plus technical details: masked code excerpt, line numbers, rule id, CWE / OWASP. Secret findings also show the **Exposed value**: the exact hardcoded password, token, header value, connection-string password or URL |
 
 ### PDF report
@@ -237,11 +239,14 @@ These adjustments were agreed after scanning real workflows. `tests/fixtures/tun
 | SQL injection via expression | Report-window / date parameters in queries are trusted | A query is still flagged if **any** `{{ }}` expression is something other than a date or window value: `reportStartDate` / `reportEndDate`, `start_date`, `end_date`, `from_date`, `to_date`, `date_from` / `date_to`, `window_start` / `window_end`, `period_start` / `period_end`, `$now`, `$today` or `DateTime.` |
 | Credentials in URL | Only real-looking secrets count | Ignored: placeholders (`your-…`, `example`, `test`, `dummy`, `changeme`, `REPLACE_ME`, `<API_KEY>`, `{TOKEN}`, `xxx`, …), expressions and empty values. A query-string value must be at least 8 characters and contain both letters and digits |
 | Pinned execution data | Not significant | Rule removed |
-| Clear-text HTTP | Internal traffic is low risk | Private and internal hosts are moved to the low-risk `n8n-cleartext-http-internal` rule; public `http://` stays medium |
+| Clear-text HTTP | Internal traffic is low risk; trusted subnets are fully accepted | Private and internal hosts are moved to the low-risk `n8n-cleartext-http-internal` rule; public `http://` stays medium. Calls into `TRUSTED_NETWORKS` (default `10.0.12.0/24`) are suppressed by the policy |
+| Unauthenticated Form Triggers | Form Triggers (e.g. *Upload 500 Subscribers*) are secured by our internal submission flow | With `TRUST_FORM_TRIGGERS=true` (default), Form Triggers are not reported by `n8n-webhook-without-authentication`, and the workflow analysis does not treat them as anonymous entry points. Webhooks and public chat triggers are still checked |
 | Bulk reads (`returnAll`) | Intentional for processing incoming items and emails | Rule removed |
 
 Notes:
 - **Date parameters:** an expression counts as a date value from its name, not its contents. If a "date" field could be set by an outside caller (for example a webhook body), validate it before the query (an IF node or a `DateTime` parse) or bind it with query parameters.
+- **Suppressions are visible:** anything the policy hides is listed under *Hidden by tuning policy* in the UI and in every export.
+- **Changing the policy:** set `TRUSTED_NETWORKS` to an empty string to report every internal HTTP call, or `TRUST_FORM_TRIGGERS=false` to check Form Triggers again.
 - **Code files:** the shared credentials-in-URL rule for code files (`rules/common/secrets.yml`) uses the same placeholder handling.
 
 ### n8n: notes on the secrets rules
@@ -310,5 +315,7 @@ To add a rule, add an entry to the right file under `rules/` with `metadata.titl
 | `SEMGREP_BIN` | `semgrep` | Semgrep executable |
 | `CORS_ORIGINS` | *(empty)* | Comma-separated allow-list; empty = same-origin only |
 | `ENABLE_DOCS` | false | Expose `/docs` (Swagger UI) |
+| `TRUSTED_NETWORKS` | `10.0.12.0/24` | Comma-separated CIDRs where plain HTTP is accepted (tuning policy). Empty = none |
+| `TRUST_FORM_TRIGGERS` | true | Don't report n8n Form Triggers as unauthenticated endpoints |
 
 The static UI assumes the default 2 MB limit (`MAX_BYTES` in `app/static/app.js`); keep it in sync if you change `MAX_PAYLOAD_BYTES`.

@@ -74,6 +74,17 @@ class Finding(BaseModel):
     source: Literal["semgrep", "workflow-graph"] = "semgrep"
 
 
+class SuppressedFinding(BaseModel):
+    """A finding hidden by the tuning policy (app/scanning/policy.py)."""
+
+    rule_id: str
+    title: str
+    risk: Risk
+    start_line: int
+    node_name: str | None = None
+    reason: str
+
+
 class DataFlow(BaseModel):
     """One place workflow data leaves (or enters from) an external service."""
 
@@ -110,6 +121,8 @@ class ScanResponse(BaseModel):
     findings: list[Finding]
     # Where data goes: LLM providers, Microsoft 365, monday.com, HTTP hosts...
     data_flows: list[DataFlow] = Field(default_factory=list)
+    # Findings hidden by the organisation's tuning policy, with the reason.
+    suppressed: list[SuppressedFinding] = Field(default_factory=list)
     # Non-fatal problems reported by semgrep (e.g. a single rule timing out).
     warnings: list[str] = Field(default_factory=list)
 

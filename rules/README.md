@@ -36,4 +36,9 @@ rules/
 
 ## Tuning
 
-Rule files hold general patterns. Decisions specific to our environment (trusted SQL date parameters, URL placeholders, internal vs public HTTP) are made in the rules themselves and listed in the main README under *Tuning decisions*.
+Rule files hold general patterns. Decisions specific to our environment are handled in two places:
+
+- **In the rules**, for pattern-level choices: trusted SQL date parameters, URL placeholders, and the internal vs public HTTP split.
+- **In `app/scanning/policy.py`**, for decisions that depend on configuration: trusted subnets (`TRUSTED_NETWORKS`) and trusted Form Triggers (`TRUST_FORM_TRIGGERS`).
+
+Policy suppressions are listed in the report under *Hidden by tuning policy*, so they are never silent. The agreed decisions are listed in the main README under *Tuning decisions*.

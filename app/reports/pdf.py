@@ -274,6 +274,10 @@ def build_pdf(result: ScanResponse, include_secrets: bool = False, scanned_at: d
             story += [_card(f, number[id(f)], include_secrets, location), Spacer(1, 4 * mm)]
         story.append(Spacer(1, 3 * mm))
 
+    if result.suppressed:
+        hidden = "; ".join(f"{x.title} ({x.node_name or f'line {x.start_line}'}): {x.reason}" for x in result.suppressed)
+        story.append(Paragraph(_safe(f"Hidden by tuning policy ({len(result.suppressed)}): {hidden}."), S["small"]))
+        story.append(Spacer(1, 2 * mm))
     story.append(Paragraph(
         ("Line numbers refer to the workflow as formatted in the scanner editor (2-space indentation). " if is_workflow
          else "Line numbers refer to the scanned file. ")
