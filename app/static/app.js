@@ -78,6 +78,11 @@
     areas: $("areas"),
     flowsCard: $("flows-card"),
     flows: $("flows"),
+    flowsIn: $("flows-in"),
+    flowsOut: $("flows-out"),
+    flowsSummary: $("flows-summary"),
+    flowsDetails: $("flows-details"),
+    flowsDetailsLabel: $("flows-details-label"),
     suppressed: $("suppressed"),
     suppressedLabel: $("suppressed-label"),
     suppressedList: $("suppressed-list"),
@@ -555,18 +560,49 @@
     const flows = lastResult.data_flows || [];
     // Only n8n workflows have a data-flow inventory.
     el.flowsCard.classList.toggle("hidden", !reportIsWorkflow() || lastResult.profile === "credentials");
-    el.flows.replaceChildren();
-    if (!flows.length) {
-      const tr = h("tr");
-      const td = h("td", "py-3 text-sm text-slate-500", "No external services detected.");
-      td.colSpan = 5;
-      tr.append(td);
-      el.flows.append(tr);
-      return;
+    el.flowsDetails.open = false;
+    el.flowsDetailsLabel.textContent = `Show all ${plural(flows.length, "connection")}`;
+    el.flowsDetails.classList.toggle("hidden", flows.length === 0);
+
+    // Compact map: one chip per service and direction, with a node count.
+    const isAi = (f) => f.via.startsWith("AI model");
+    const lanes = { in: new Map(), out: new Map() };
+    for (const f of flows) {
+      const lane = f.direction === "sends" ? lanes.out : lanes.in;
+      const entry = lane.get(f.service) || { service: f.service, nodes: [], ai: false, external: f.external };
+      entry.nodes.push(f.node_name);
+      entry.ai = entry.ai || isAi(f);
+      lane.set(f.service, entry);
     }
+    const chips = (container, lane, empty) => {
+      container.replaceChildren();
+      if (!lane.size) {
+        container.append(h("span", "text-xs text-slate-400", empty));
+        return;
+      }
+      const entries = [...lane.values()].sort((a, b) => Number(b.ai) - Number(a.ai) || a.service.localeCompare(b.service));
+      for (const e of entries) {
+        const chip = h("span", `inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${e.ai ? "border-violet-300 bg-violet-50 text-violet-800" : "border-slate-200 bg-white text-slate-700"}`);
+        chip.title = `${e.service}: ${e.nodes.join(", ")}`;
+        if (e.ai) chip.append(h("span", "rounded bg-violet-600 px-1 text-[9px] font-bold text-white", "AI"));
+        chip.append(document.createTextNode(e.service));
+        if (!e.external) chip.append(h("span", "text-[10px] text-emerald-700", "internal"));
+        if (e.nodes.length > 1) chip.append(h("span", "text-[10px] text-slate-400", `×${e.nodes.length}`));
+        container.append(chip);
+      }
+    };
+    chips(el.flowsIn, lanes.in, "No inbound services");
+    chips(el.flowsOut, lanes.out, "Nothing leaves the workflow");
+
+    const aiCount = [...lanes.out.values()].filter((e) => e.ai).length;
+    el.flowsSummary.textContent = flows.length
+      ? `Sends to ${plural(lanes.out.size, "service")}${aiCount ? ` (${aiCount} AI ${aiCount === 1 ? "provider" : "providers"})` : ""} · reads from ${plural(lanes.in.size, "service")}`
+      : "No external services detected";
+
+    el.flows.replaceChildren();
     for (const f of flows) {
       const tr = h("tr", "align-top");
-      const service = h("td", "py-2 pr-3 font-medium");
+      const service = h("td", "px-3 py-2 font-medium");
       service.append(document.createTextNode(f.service));
       if (!f.external) service.append(h("span", "ml-1 rounded bg-emerald-50 px-1 text-[10px] font-semibold text-emerald-700", "internal"));
       const dirClass = f.direction === "sends" ? "text-orange-700" : "text-slate-600";
@@ -575,7 +611,7 @@
         h("td", `py-2 pr-3 text-xs ${dirClass}`, FLOW_VERB[f.direction] || f.direction),
         h("td", "py-2 pr-3", f.node_name),
         h("td", "py-2 pr-3 text-xs text-slate-500", f.via),
-        h("td", "py-2 font-mono text-xs text-slate-500", f.detail),
+        h("td", "py-2 pr-3 font-mono text-xs text-slate-500", f.detail),
       );
       el.flows.append(tr);
     }

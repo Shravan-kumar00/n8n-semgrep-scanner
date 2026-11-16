@@ -96,7 +96,7 @@ All dependencies are pinned in `pyproject.toml`: runtime ones under `[project].d
 | **Severity tiles** | Counts per severity; click one to filter the findings |
 | **Fix these first** | The top 5 critical / high issues; click one to jump to it |
 | **Risk by area** | Secrets, AI agents, Outlook/Teams/monday.com, injection, …; click one to filter |
-| **Where your data goes** *(n8n only)* | Every external service the workflow sends to, reads from or receives from: LLM providers, Microsoft 365, monday.com, HTTP hosts. Each row names the node and whether it's an AI tool, AI model, trigger or normal step |
+| **Where your data goes** *(n8n only)* | A compact map: *Data comes from* on one side and *Data goes to* on the other, one chip per service (LLM providers marked **AI**, a count when several nodes use the same service; hover for node names). The full node-by-node table is under *Show all N connections* |
 | **Hidden by tuning policy** | Findings suppressed by `TRUSTED_NETWORKS` / `TRUST_FORM_TRIGGERS`, each with its reason (collapsed; also included in HTML, Markdown and PDF) |
 | **All findings** | Grouped by area, severity or node (n8n). Each one has *What's wrong* and *How to fix*, plus technical details: masked code excerpt, line numbers, rule id, CWE / OWASP. Secret findings also show the **Exposed value**: the exact hardcoded password, token, header value, connection-string password or URL |
 
