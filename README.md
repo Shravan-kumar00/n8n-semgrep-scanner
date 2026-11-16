@@ -26,7 +26,7 @@ n8n-semgrep-scanner/
 │   ├── pdf_report.py    # PDF report (ReportLab): findings only, grouped by severity
 │   └── main.py          # FastAPI app, routes, body-size limit, security headers
 ├── rules/
-│   ├── n8n/             # 28 rules for n8n workflow JSON
+│   ├── n8n/             # 27 rules for n8n workflow JSON
 │   ├── code/            # one rule file per language (python.yml, java.yml, terraform.yml, …)
 │   └── common/          # secret detection shared by all code / config languages
 ├── static/
@@ -183,15 +183,15 @@ These rules are pattern based: they flag risky code, they don't trace whether th
 | `n8n-hardcoded-secret-name-value-pair` | high | literal header / query / body / Set-node fields such as `Authorization`, `X-Shopify-Access-Token`, `adminPassword`, `Cookie` |
 | `n8n-hardcoded-secret-in-code-or-body` | high | `password = '…'` / `apiKey: "…"` in Code nodes, passwords inside escaped JSON bodies, `Password=…;` connection strings |
 | `n8n-literal-authorization-token` | high | literal `Bearer …` / `Basic …` values anywhere |
-| `n8n-credentials-in-url` | high | `scheme://user:pass@host` and `?password=` / `?api_key=` / `?token=` query parameters |
+| `n8n-credentials-in-url` | high | real-looking credentials in URLs: `scheme://user:pass@host`, or `?password=` / `?api_key=` / `?token=` values of 8+ characters with letters and digits. Placeholders are ignored |
 | `n8n-tls-verification-disabled` | high | `allowUnauthorizedCerts`, `ignoreSSLIssues`, `rejectUnauthorized: false`, `ssl: disable` |
 | `n8n-code-node-dangerous-api` | high | `eval`, `new Function`, `child_process`, `process.env`, `os.system`, … in Code/Function nodes |
-| `n8n-sql-injection-via-expression` | high | SQL statements built with `{{ }}` |
+| `n8n-sql-injection-via-expression` | high | SQL statements built with `{{ }}`, unless every expression is a report-window / date value |
 | `n8n-webhook-without-authentication` | medium | Webhook / Form trigger with no or `none` authentication |
 | `n8n-webhook-permissive-cors` | medium | `allowedOrigins: "*"` |
-| `n8n-cleartext-http-url` | medium | non-local `http://` endpoints |
+| `n8n-cleartext-http-url` | medium | `http://` endpoints on public hosts |
+| `n8n-cleartext-http-internal` | low | `http://` to private IPs (10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16), single-label service names (`http://gotenberg:3000`) and internal DNS (`.local`, `.internal`, `.lan`, `.corp`, `.svc`, `.cluster.local`) |
 | `n8n-execute-command-node` | medium | any Execute Command node |
-| `n8n-pinned-data-exported` | low | `pinData` included in the export |
 | `n8n-teams-webhook-url-exposed` | high | Teams incoming-webhook / Power Automate workflow URLs (the URL is the credential) |
 
 ### n8n: AI agents
@@ -225,9 +225,24 @@ The checks marked *graph* follow the workflow's connections (in `app/graph.py`) 
 | `n8n-email-hidden-bcc` | medium | Outlook / Gmail / SMTP mail with a BCC recipient |
 | `n8n-email-recipient-from-request` | medium | Email recipient taken from webhook or form input |
 | `n8n-bulk-record-forwarded` | medium | `JSON.stringify($json)`, `{{ $json }}` or `$input.all()` posted to Teams, Outlook, monday.com, Slack or HTTP |
-| `n8n-bulk-read-internal-data` | low | `returnAll: true` on mailbox, Teams or board reads |
 
 The rule ids and parameter names follow n8n's Outlook v2, Teams v2, monday.com v1 and AI Agent (LangChain) nodes. Older node versions may use different parameter names; if a known issue in your workflows isn't flagged, send a sanitised export so a case can be added.
+
+### n8n: tuning decisions
+
+These adjustments were agreed after scanning real workflows. `tests/fixtures/tuning-cases.json` and `test_rule_tuning_decisions` keep them in place.
+
+| Finding | Decision | How it's implemented |
+|---|---|---|
+| SQL injection via expression | Report-window / date parameters in queries are trusted | A query is still flagged if **any** `{{ }}` expression is something other than a date or window value: `reportStartDate` / `reportEndDate`, `start_date`, `end_date`, `from_date`, `to_date`, `date_from` / `date_to`, `window_start` / `window_end`, `period_start` / `period_end`, `$now`, `$today` or `DateTime.` |
+| Credentials in URL | Only real-looking secrets count | Ignored: placeholders (`your-…`, `example`, `test`, `dummy`, `changeme`, `REPLACE_ME`, `<API_KEY>`, `{TOKEN}`, `xxx`, …), expressions and empty values. A query-string value must be at least 8 characters and contain both letters and digits |
+| Pinned execution data | Not significant | Rule removed |
+| Clear-text HTTP | Internal traffic is low risk | Private and internal hosts are moved to the low-risk `n8n-cleartext-http-internal` rule; public `http://` stays medium |
+| Bulk reads (`returnAll`) | Intentional for processing incoming items and emails | Rule removed |
+
+Notes:
+- **Date parameters:** an expression counts as a date value from its name, not its contents. If a "date" field could be set by an outside caller (for example a webhook body), validate it before the query (an IF node or a `DateTime` parse) or bind it with query parameters.
+- **Code files:** the shared credentials-in-URL rule for code files (`rules/common/secrets.yml`) uses the same placeholder handling.
 
 ### n8n: notes on the secrets rules
 

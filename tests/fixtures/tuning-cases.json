@@ -1,0 +1,93 @@
+{
+  "name": "Rule tuning cases (each node says whether it must be flagged)",
+  "nodes": [
+    {
+      "name": "IGNORE - Report window CTE",
+      "type": "n8n-nodes-base.mySql",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH win AS (SELECT '{{ $json.reportStartDate }}' AS s, '{{ $('Set Window').item.json.reportEndDate }}' AS e) SELECT * FROM orders o JOIN win ON o.created_at BETWEEN win.s AND win.e"
+      }
+    },
+    {
+      "name": "IGNORE - Date range with now",
+      "type": "n8n-nodes-base.mySql",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*) FROM tickets WHERE created_at >= '{{ $now.minus({days: 7}).toISODate() }}' AND created_at < '{{ $json.end_date }}'"
+      }
+    },
+    {
+      "name": "FLAG - Customer lookup (SQL)",
+      "type": "n8n-nodes-base.postgres",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM customers WHERE email = '{{ $json.body.email }}'"
+      }
+    },
+    {
+      "name": "FLAG - Window plus user input (SQL)",
+      "type": "n8n-nodes-base.mySql",
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM orders WHERE created_at >= '{{ $json.reportStartDate }}' AND customer = '{{ $json.query.customer }}'"
+      }
+    },
+    {
+      "name": "IGNORE - Placeholder token URLs",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": {
+        "url": "https://hooks.example.com/notify?token=your-secret-token",
+        "options": {
+          "fallback": "https://hooks.example.com/notify?api_key=<API_KEY>&secret=changeme",
+          "templated": "https://hooks.example.com/notify?token={TOKEN}&access_token=REPLACE_ME",
+          "basic": "https://your-user:your-password@reports.example.com/upload"
+        }
+      }
+    },
+    {
+      "name": "IGNORE - Token from expression",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": { "url": "=https://hooks.example.com/notify?token={{ $env.HOOK_TOKEN }}" }
+    },
+    {
+      "name": "FLAG - Real token in URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": { "url": "https://hooks.example.com/notify?token=9f8e7d6c5b4aQx72Lm" }
+    },
+    {
+      "name": "LOW - Internal conversion API",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": { "url": "http://10.0.12.187:8080/forms/libreoffice/convert", "method": "POST" }
+    },
+    {
+      "name": "LOW - Docker service name",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": { "url": "http://gotenberg:3000/forms/chromium/convert/html" }
+    },
+    {
+      "name": "LOW - Internal DNS",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": { "url": "http://pdf-render.svc.cluster.local/render" }
+    },
+    {
+      "name": "MEDIUM - Public HTTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "parameters": { "url": "http://api.partner-example.com/v1/orders" }
+    },
+    {
+      "name": "IGNORE - Monday items",
+      "type": "n8n-nodes-base.mondayCom",
+      "parameters": { "resource": "boardItem", "operation": "getAll", "boardId": "1234567", "returnAll": true }
+    },
+    {
+      "name": "IGNORE - Incoming mail",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "parameters": { "resource": "message", "operation": "getAll", "returnAll": true }
+    }
+  ],
+  "connections": {},
+  "pinData": {
+    "IGNORE - Monday items": [{ "json": { "name": "Sample item" } }]
+  }
+}

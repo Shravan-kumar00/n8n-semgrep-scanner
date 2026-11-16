@@ -16,6 +16,7 @@ from app.main import app  # noqa: E402
 SAMPLE = Path(__file__).resolve().parent.parent / "static" / "samples" / "vulnerable-workflow.json"
 AI_SAMPLE = SAMPLE.with_name("ai-agents-m365-workflow.json")
 CREDENTIAL_CASES = Path(__file__).resolve().parent / "fixtures" / "credential-cases.json"
+TUNING_CASES = Path(__file__).resolve().parent / "fixtures" / "tuning-cases.json"
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +57,6 @@ def test_sample_triggers_every_rule(client):
         "n8n-sql-injection-via-expression",
         "n8n-webhook-without-authentication",
         "n8n-webhook-permissive-cors",
-        "n8n-pinned-data-exported",
     }
     assert body["summary"]["total"] == len(body["findings"])
     # Findings are sorted most severe first and mapped to their nodes.
@@ -149,8 +149,6 @@ def test_ai_and_integration_findings(client):
         ("bulk-record-forwarded", "Post to Teams"),
         ("email-recipient-from-request", "Notify Requester"),
         ("email-hidden-bcc", "Notify Requester"),
-        ("bulk-read-internal-data", "Read Mailbox"),
-        ("bulk-read-internal-data", "Board Lookup"),
         ("teams-webhook-url-exposed", "Teams Alert"),
         ("webhook-without-authentication", "Lookup Webhook"),
         ("webhook-without-authentication", "Intake Form"),
@@ -182,6 +180,23 @@ def test_only_secret_findings_expose_values(client):
     for f in body["findings"]:
         assert (f["exposed_value"] is not None) == (f["category"] == "secrets"), f["rule_id"]
     assert "n8n-code-node-present" not in {f["rule_id"] for f in body["findings"]}
+
+
+def test_rule_tuning_decisions(client):
+    """Agreed tuning: trusted SQL date windows, URL placeholders, internal
+    HTTP, bulk reads and pinned data. Node names say what is expected."""
+    body = scan(client, TUNING_CASES.read_text()).json()
+    found = {(f["node_name"], f["rule_id"].removeprefix("n8n-"), f["risk"]) for f in body["findings"]}
+    assert found == {
+        ("FLAG - Customer lookup (SQL)", "sql-injection-via-expression", "high"),
+        ("FLAG - Window plus user input (SQL)", "sql-injection-via-expression", "high"),
+        ("FLAG - Real token in URL", "credentials-in-url", "high"),
+        ("LOW - Internal conversion API", "cleartext-http-internal", "low"),
+        ("LOW - Docker service name", "cleartext-http-internal", "low"),
+        ("LOW - Internal DNS", "cleartext-http-internal", "low"),
+        ("MEDIUM - Public HTTP", "cleartext-http-url", "medium"),
+    }
+    assert not any(name.startswith("IGNORE") for name, _, _ in found)
 
 
 def test_unknown_profile_rejected(client):

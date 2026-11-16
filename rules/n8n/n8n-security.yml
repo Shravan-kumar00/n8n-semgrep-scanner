@@ -6,7 +6,7 @@
 #   metadata.brief        One plain-English sentence for reports (PDF)
 #   metadata.risk         critical | high | medium | low | info  (UI severity)
 #   metadata.category     secrets | transport | injection | code-execution |
-#                         access-control | data-exposure
+#                         access-control | ai-agent | integrations
 #   metadata.cwe          CWE reference
 #   metadata.remediation  Actionable fix shown to the user
 #
@@ -119,9 +119,13 @@ rules:
       A URL carries credentials, either as user:password@host or as a secret
       query parameter (?password=, ?api_key=, ?token=). URLs are stored in
       clear text and routinely written to proxy and server logs.
+    # Tuning: only real-looking values are reported. Placeholders
+    # (your-secret-token, <API_KEY>, {TOKEN}, changeme, REPLACE_ME, ...),
+    # expressions and empty values are ignored, and a query-string secret
+    # must be 8+ characters containing both letters and digits.
     pattern-either:
-      - pattern-regex: \b[a-z][a-z0-9+.-]*://[^/\s:@"]+:[^/\s@"]+@[^\s"]+
-      - pattern-regex: (?i)[?&](password|passwd|pwd|pass|secret|client_secret|api[_-]?key|apikey|token|access_token|auth_token|key)=(?![{$<]|%7B)[^&"\s#\\]{4,}
+      - pattern-regex: (?i)\b[a-z][a-z0-9+.-]*://[^/\s:@"]+:(?![{$<*%]|(?:your|my|the|some|example|sample|test|dummy|fake|placeholder|changeme|change[_-]me|insert|replace|enter|xxx|todo|password|pass|secret)(?:[-_@]|\b))[^/\s@"]+@[^\s"]+
+      - pattern-regex: (?i)[?&](password|passwd|pwd|pass|secret|client_secret|api[_-]?key|apikey|token|access_token|auth_token|key)=(?![{$<%*]|(?:your|my|the|some|example|sample|test|dummy|fake|placeholder|changeme|change[_-]me|insert|replace|enter|xxx|todo|tbd|none|null)(?:[-_]|\b))(?=[^&"\s#\\]*\d)(?=[^&"\s#\\]*[a-z])[^&"\s#\\]{8,}
     metadata:
       title: Credentials embedded in URL
       brief: "A URL contains a username and password or a secret key."
@@ -212,13 +216,15 @@ rules:
     languages: [json]
     severity: WARNING
     message: >-
-      Node calls a non-local endpoint over plain HTTP ($URL). Request data,
-      tokens and responses travel unencrypted.
+      Node calls a public endpoint over plain HTTP ($URL). Request data,
+      tokens and responses travel unencrypted across untrusted networks.
     patterns:
       - pattern: '"url": "$URL"'
+      # Tuning: private / internal hosts are reported by the low-risk rule
+      # n8n-cleartext-http-internal instead.
       - metavariable-regex:
           metavariable: $URL
-          regex: ^"?=?\s*http://(?!(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)(:\d+)?([/"]|$))
+          regex: (?i)^"?=?\s*http://(?!(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)(?::\d+)?(?:[/?"]|$))(?!(?:10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|169\.254(?:\.\d{1,3}){2}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])(?:\.\d{1,3}){2}|[a-z0-9-]+|[a-z0-9.-]+\.(?:local|internal|lan|intranet|corp|home\.arpa|svc|cluster\.local))(?::\d+)?(?:[/?"]|$))
     metadata:
       title: Clear-text HTTP endpoint
       brief: "Data is sent over unencrypted http:// instead of https://."
@@ -227,6 +233,27 @@ rules:
       cwe: "CWE-319: Cleartext Transmission of Sensitive Information"
       owasp: "A02:2021 - Cryptographic Failures"
       remediation: Use an https:// endpoint.
+
+  - id: n8n-cleartext-http-internal
+    languages: [json]
+    severity: INFO
+    message: >-
+      Node calls an internal service over plain HTTP ($URL). Traffic stays on
+      the private network but is unencrypted between hosts.
+    patterns:
+      - pattern: '"url": "$URL"'
+      - metavariable-regex:
+          metavariable: $URL
+          regex: (?i)^"?=?\s*http://(?!(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)(?::\d+)?(?:[/?"]|$))(?:10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|169\.254(?:\.\d{1,3}){2}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])(?:\.\d{1,3}){2}|[a-z0-9-]+|[a-z0-9.-]+\.(?:local|internal|lan|intranet|corp|home\.arpa|svc|cluster\.local))(?::\d+)?(?:[/?"]|$)
+    metadata:
+      title: Clear-text HTTP to internal service
+      brief: "An internal service is called over unencrypted http:// on the private network."
+      risk: low
+      category: transport
+      cwe: "CWE-319: Cleartext Transmission of Sensitive Information"
+      remediation: >-
+        Acceptable on a trusted private network. Prefer HTTPS (or a service
+        mesh with mTLS) if the traffic crosses hosts or carries sensitive data.
 
   # ---------------------------------------------------------------------------
   # INJECTION / CODE EXECUTION
@@ -316,9 +343,12 @@ rules:
       interpolated directly into SQL allow SQL injection.
     patterns:
       - pattern: '"query": "$SQL"'
+      # Tuning: report-window / date parameters ({{ $json.reportStartDate }},
+      # {{ $json.end_date }}, {{ $now... }}) are trusted internal values. Only
+      # flag when at least one {{ }} expression references something else.
       - metavariable-regex:
           metavariable: $SQL
-          regex: (?is).*\b(select|insert|update|delete|merge|drop|alter|create|exec|call|with)\b.*\{\{.*\}\}
+          regex: (?is).*\b(select|insert|update|delete|merge|drop|alter|create|exec|call|with)\b.*\{\{(?![^}]*?(?:report_?(?:start|end)|(?:start|end|from|to)_?(?:date|time|day)|date_?(?:from|to|start|end)|window_?(?:start|end)|period_?(?:start|end)|\$now|\$today|DateTime\.))[^}]*\}\}
     metadata:
       title: SQL injection via expression
       brief: "Outside data is inserted into a SQL query, letting an attacker read or change the database."
@@ -378,26 +408,6 @@ rules:
       cwe: "CWE-942: Permissive Cross-domain Policy with Untrusted Domains"
       owasp: "A05:2021 - Security Misconfiguration"
       remediation: List the specific origins that need access in "Allowed Origins (CORS)".
-
-  # ---------------------------------------------------------------------------
-  # DATA EXPOSURE
-  # ---------------------------------------------------------------------------
-  - id: n8n-pinned-data-exported
-    languages: [json]
-    severity: INFO
-    message: >-
-      The export contains pinned execution data. Pinned data is real sample
-      input/output and frequently contains personal data or tokens.
-    pattern: '"pinData": {..., "$NODE": $DATA, ...}'
-    metadata:
-      title: Pinned execution data included in export
-      brief: "Real sample data is saved inside the workflow export."
-      risk: low
-      category: data-exposure
-      cwe: "CWE-200: Exposure of Sensitive Information"
-      remediation: >-
-        Unpin the data (or delete the "pinData" block) before sharing or
-        committing the workflow.
 
   # ---------------------------------------------------------------------------
   # AI AGENTS  (OWASP Top 10 for LLM Applications 2025)
@@ -729,25 +739,3 @@ rules:
         {{ $json.summary }}). Add an Edit Fields (Set) node with "Keep only set
         fields" before the send.
 
-  - id: n8n-bulk-read-internal-data
-    languages: [json]
-    severity: INFO
-    message: >-
-      $TYPE reads all records (returnAll = true). Large mailbox / board reads
-      increase what can leak if this data flows to an AI model, a webhook
-      response or an external service.
-    patterns:
-      - pattern-inside: '{..., "type": "$TYPE", ...}'
-      - metavariable-regex:
-          metavariable: $TYPE
-          regex: ^"?n8n-nodes-base\.(microsoftOutlook|microsoftTeams|mondayCom|gmail|microsoftOneDrive|microsoftSharePoint)(Tool)?"?$
-      - pattern: '"returnAll": true'
-    metadata:
-      title: Bulk read of mailbox / board data
-      brief: "The workflow reads every email or board item instead of only what it needs."
-      risk: low
-      category: integrations
-      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
-      remediation: >-
-        Set a Limit and filters (folder, sender, date, board group) so only
-        the records the workflow needs are read.
