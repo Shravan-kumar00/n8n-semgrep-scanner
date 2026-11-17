@@ -347,11 +347,14 @@ rules:
     patterns:
       - pattern: '"query": "$SQL"'
       # Tuning: report-window / date parameters ({{ $json.reportStartDate }},
-      # {{ $json.end_date }}, {{ $now... }}) are trusted internal values. Only
-      # flag when at least one {{ }} expression references something else.
+      # {{ $json.end_date }}, {{ $now... }}) and expressions that are only a
+      # field of a named node ({{ $('ticket data').item.json.request_type }},
+      # .first() / .last(), $node["x"].json.y) are trusted internal values.
+      # Only flag when at least one {{ }} expression references something else,
+      # e.g. {{ $json.output }} (AI agent output) or webhook data.
       - metavariable-regex:
           metavariable: $SQL
-          regex: (?is).*\b(select|insert|update|delete|merge|drop|alter|create|exec|call|with)\b.*\{\{(?![^}]*?(?:report_?(?:start|end)|(?:start|end|from|to)_?(?:date|time|day)|date_?(?:from|to|start|end)|window_?(?:start|end)|period_?(?:start|end)|\$now|\$today|DateTime\.))[^}]*\}\}
+          regex: (?is).*\b(select|insert|update|delete|merge|drop|alter|create|exec|call|with)\b.*\{\{(?![^}]*?(?:report_?(?:start|end)|(?:start|end|from|to)_?(?:date|time|day)|date_?(?:from|to|start|end)|window_?(?:start|end)|period_?(?:start|end)|\$now|\$today|DateTime\.))(?!\s*(?:\$\(\s*\\?['"][^'"\\]+\\?['"]\s*\)\s*\.\s*(?:item|first\(\)|last\(\))|\$node\[\s*\\?['"][^'"\\]+\\?['"]\s*\])\s*\.\s*json(?:\s*\.\s*[\w$]+|\[\s*\\?['"][^'"\\]+\\?['"]\s*\])+\s*\}\})[^}]*\}\}
     metadata:
       title: SQL injection via expression
       brief: "Outside data is inserted into a SQL query, letting an attacker read or change the database."

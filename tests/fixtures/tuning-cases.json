@@ -33,6 +33,11 @@
         "query": "SELECT * FROM orders WHERE created_at >= '{{ $json.reportStartDate }}' AND customer = '{{ $json.query.customer }}'"
       }
     },
+    {"name": "IGNORE - Ticket lookup (named node)", "type": "n8n-nodes-base.postgres", "parameters": {"operation": "executeQuery", "query": "SELECT id FROM tickets WHERE custom_field_msisdn = '{{ $('ticket data').item.json.msisdn }}' AND request_type = '{{ $('ticket data').item.json.request_type }}'"}},
+    {"name": "IGNORE - Duplicate check (first / $node)", "type": "n8n-nodes-base.postgres", "parameters": {"operation": "executeQuery", "query": "SELECT 1 FROM accounts WHERE account_name = '{{ $('Get Account').first().json.account_name }}' AND request_type = '{{ $node[\"ticket data\"].json[\"request_type\"] }}'"}},
+    {"name": "FLAG - Duplicate check with AI output", "type": "n8n-nodes-base.postgres", "parameters": {"operation": "executeQuery", "query": "SELECT 1 FROM accounts WHERE custom_field_msisdn = '{{ $json.output }}'"}},
+    {"name": "FLAG - Named node mixed with request data", "type": "n8n-nodes-base.postgres", "parameters": {"operation": "executeQuery", "query": "SELECT * FROM tickets WHERE request_type = '{{ $('ticket data').item.json.request_type + $json.body.extra }}'"}},
+    {"name": "FLAG - Named node plus webhook field", "type": "n8n-nodes-base.postgres", "parameters": {"operation": "executeQuery", "query": "SELECT * FROM tickets WHERE request_type = '{{ $('ticket data').item.json.request_type }}' AND account_name = '{{ $json.body.account }}'"}},
     {
       "name": "IGNORE - Placeholder token URLs",
       "type": "n8n-nodes-base.httpRequest",

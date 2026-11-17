@@ -188,7 +188,7 @@ These rules are pattern based: they flag risky code, they don't trace whether th
 | `n8n-credentials-in-url` | high | real-looking credentials in URLs: `scheme://user:pass@host`, or `?password=` / `?api_key=` / `?token=` values of 8+ characters with letters and digits. Placeholders are ignored |
 | `n8n-tls-verification-disabled` | high | `allowUnauthorizedCerts`, `ignoreSSLIssues`, `rejectUnauthorized: false`, `ssl: disable` |
 | `n8n-code-node-dangerous-api` | high | `eval`, `new Function`, `child_process`, `process.env`, `os.system`, … in Code/Function nodes |
-| `n8n-sql-injection-via-expression` | high | SQL statements built with `{{ }}`, unless every expression is a report-window / date value |
+| `n8n-sql-injection-via-expression` | high | SQL statements built with `{{ }}`, unless every expression is a report-window / date value or a field of a named node |
 | `n8n-webhook-without-authentication` | medium | Webhook / Form trigger with no or `none` authentication |
 | `n8n-webhook-permissive-cors` | medium | `allowedOrigins: "*"` |
 | `n8n-cleartext-http-url` | medium | `http://` endpoints on public hosts |
@@ -237,6 +237,7 @@ These adjustments were agreed after scanning real workflows. `tests/fixtures/tun
 | Finding | Decision | How it's implemented |
 |---|---|---|
 | SQL injection via expression | Report-window / date parameters in queries are trusted | A query is still flagged if **any** `{{ }}` expression is something other than a date or window value: `reportStartDate` / `reportEndDate`, `start_date`, `end_date`, `from_date`, `to_date`, `date_from` / `date_to`, `window_start` / `window_end`, `period_start` / `period_end`, `$now`, `$today` or `DateTime.` |
+| SQL lookups from internal nodes | Duplicate-check / ticket-lookup queries reading fields of earlier nodes are trusted | An expression that is **only** a field of a named node is trusted: `{{ $('ticket data').item.json.request_type }}`, `.first()` / `.last()`, or `$node["ticket data"].json.x`. Anything mixed in (`+ $json.body.x`, other expressions in the same query) keeps the query flagged. `{{ $json.output }}` is **not** trusted: it is usually AI agent output, which outside emails or chats can steer |
 | Credentials in URL | Only real-looking secrets count | Ignored: placeholders (`your-…`, `example`, `test`, `dummy`, `changeme`, `REPLACE_ME`, `<API_KEY>`, `{TOKEN}`, `xxx`, …), expressions and empty values. A query-string value must be at least 8 characters and contain both letters and digits |
 | Pinned execution data | Not significant | Rule removed |
 | Clear-text HTTP | Internal traffic is low risk; trusted subnets are fully accepted | Private and internal hosts are moved to the low-risk `n8n-cleartext-http-internal` rule; public `http://` stays medium. Calls into `TRUSTED_NETWORKS` (default `10.0.12.0/24`) are suppressed by the policy |
@@ -245,6 +246,7 @@ These adjustments were agreed after scanning real workflows. `tests/fixtures/tun
 | Risky API in Code node | Text-parsing code (e.g. *Regex Extraction1*) is safe | `n8n-code-node-dangerous-api` matches `exec(` only as a standalone call (Python `exec`), not JavaScript's `regex.exec(text)`. `eval`, `new Function`, `child_process`, `process.env` and similar are still flagged |
 
 Notes:
+- **Named-node values:** trusting `$('node').item.json.x` assumes that node's data is internal. If a named node holds data from outside (an email, webhook or AI output), pass it as a query parameter instead.
 - **Date parameters:** an expression counts as a date value from its name, not its contents. If a "date" field could be set by an outside caller (for example a webhook body), validate it before the query (an IF node or a `DateTime` parse) or bind it with query parameters.
 - **Suppressions are visible:** anything the policy hides is listed under *Hidden by tuning policy* in the UI and in every export.
 - **Changing the policy:** set `TRUSTED_NETWORKS` to an empty string to report every internal HTTP call, or `TRUST_FORM_TRIGGERS=false` to check Form Triggers again.

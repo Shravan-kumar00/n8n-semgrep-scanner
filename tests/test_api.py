@@ -175,6 +175,9 @@ def test_rule_tuning_decisions(client):
     assert found == {
         ("FLAG - Customer lookup (SQL)", "sql-injection-via-expression", "high"),
         ("FLAG - Window plus user input (SQL)", "sql-injection-via-expression", "high"),
+        ("FLAG - Duplicate check with AI output", "sql-injection-via-expression", "high"),
+        ("FLAG - Named node mixed with request data", "sql-injection-via-expression", "high"),
+        ("FLAG - Named node plus webhook field", "sql-injection-via-expression", "high"),
         ("FLAG - Real token in URL", "credentials-in-url", "high"),
         ("FLAG - Public webhook", "webhook-without-authentication", "medium"),
         ("FLAG - Python exec", "code-node-dangerous-api", "high"),
