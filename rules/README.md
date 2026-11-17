@@ -39,6 +39,6 @@ rules/
 Rule files hold general patterns. Decisions specific to our environment are handled in two places:
 
 - **In the rules**, for pattern-level choices: trusted SQL date parameters, URL placeholders, and the internal vs public HTTP split.
-- **In `app/scanning/policy.py`**, for decisions that depend on configuration: trusted subnets (`TRUSTED_NETWORKS`) and trusted Form Triggers (`TRUST_FORM_TRIGGERS`).
+- **In `app/scanning/policy.py`**, for decisions that depend on configuration: trusted subnets (`TRUSTED_NETWORKS`), trusted Form Triggers (`TRUST_FORM_TRIGGERS`) and rules switched off entirely (`DISABLED_RULES`).
 
 Policy suppressions are listed in the report under *Hidden by tuning policy*, so they are never silent. The agreed decisions are listed in the main README under *Tuning decisions*.

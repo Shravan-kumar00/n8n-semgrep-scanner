@@ -75,6 +75,13 @@ class Settings:
     trusted_networks: tuple = field(default_factory=lambda: _networks_env("TRUSTED_NETWORKS", "10.0.12.0/24"))
     # n8n Form Triggers are protected by our internal submission flow.
     trust_form_triggers: bool = field(default_factory=lambda: _bool_env("TRUST_FORM_TRIGGERS", True))
+    # Rule ids to ignore completely; their findings are listed as hidden.
+    # Set DISABLED_RULES="" to turn every rule back on.
+    disabled_rules: list[str] = field(
+        default_factory=lambda: _list_env("DISABLED_RULES")
+        if os.getenv("DISABLED_RULES") is not None
+        else ["n8n-sql-injection-via-expression"]
+    )
     static_dir: Path = Path(__file__).resolve().parent / "static"
 
 

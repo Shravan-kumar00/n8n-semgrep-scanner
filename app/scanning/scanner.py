@@ -74,7 +74,9 @@ class SemgrepScanner:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._slots = asyncio.Semaphore(settings.max_concurrent_scans)
-        self.policy = TuningPolicy(settings.trusted_networks, settings.trust_form_triggers)
+        self.policy = TuningPolicy(
+            settings.trusted_networks, settings.trust_form_triggers, frozenset(settings.disabled_rules)
+        )
         self.version: str = "unknown"
 
     # ------------------------------------------------------------------ setup
@@ -132,18 +134,15 @@ class SemgrepScanner:
         findings, warnings = self._parse_results(raw, target)
         workflow = target.workflow
         data_flows = []
-        suppressed = []
-        if workflow is not None:
-            findings, suppressed = self.policy.apply(findings)
         if profile == "credentials":
             findings = [f for f in findings if f.category == SECRETS_CATEGORY]
-            suppressed = []  # the policy only suppresses non-secret rules
         elif workflow is not None:
             graph_findings, data_flows = analyze_workflow(workflow, trust_form_triggers=self.policy.trust_form_triggers)
-            findings = sorted(
-                findings + graph_findings,
-                key=lambda f: (RISK_ORDER.index(f.risk), f.start_line, f.rule_id),
-            )
+            findings = findings + graph_findings
+        # Organisation tuning (trusted networks, trusted form triggers,
+        # disabled rules), applied to Semgrep and workflow-graph findings alike.
+        findings, suppressed = self.policy.apply(findings)
+        findings.sort(key=lambda f: (RISK_ORDER.index(f.risk), f.start_line, f.rule_id))
         duration_ms = int((time.monotonic() - started) * 1000)
         logger.info("scan %s (%s, %s) finished: %d findings in %d ms",
                     scan_id, target.language.id, profile, len(findings), duration_ms)

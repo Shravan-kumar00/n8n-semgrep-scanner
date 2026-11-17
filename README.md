@@ -241,6 +241,7 @@ These adjustments were agreed after scanning real workflows. `tests/fixtures/tun
 | Credentials in URL | Only real-looking secrets count | Ignored: placeholders (`your-…`, `example`, `test`, `dummy`, `changeme`, `REPLACE_ME`, `<API_KEY>`, `{TOKEN}`, `xxx`, …), expressions and empty values. A query-string value must be at least 8 characters and contain both letters and digits |
 | Pinned execution data | Not significant | Rule removed |
 | Clear-text HTTP | Internal traffic is low risk; trusted subnets are fully accepted | Private and internal hosts are moved to the low-risk `n8n-cleartext-http-internal` rule; public `http://` stays medium. Calls into `TRUSTED_NETWORKS` (default `10.0.12.0/24`) are suppressed by the policy |
+| SQL injection via expression (whole rule) | Turned off: our SQL queries use trusted internal values | `DISABLED_RULES` (default `n8n-sql-injection-via-expression`) hides every finding of the rule; they are listed under *Hidden by tuning policy* with the reason. The rule-level tuning above still decides what would be reported if the rule is turned back on |
 | Unauthenticated Form Triggers | Form Triggers (e.g. *Upload 500 Subscribers*) are secured by our internal submission flow | With `TRUST_FORM_TRIGGERS=true` (default), Form Triggers are not reported by `n8n-webhook-without-authentication`, and the workflow analysis does not treat them as anonymous entry points. Webhooks and public chat triggers are still checked |
 | Bulk reads (`returnAll`) | Intentional for processing incoming items and emails | Rule removed |
 | Risky API in Code node | Text-parsing code (e.g. *Regex Extraction1*) is safe | `n8n-code-node-dangerous-api` matches `exec(` only as a standalone call (Python `exec`), not JavaScript's `regex.exec(text)`. `eval`, `new Function`, `child_process`, `process.env` and similar are still flagged |
@@ -249,7 +250,7 @@ Notes:
 - **Named-node values:** trusting `$('node').item.json.x` assumes that node's data is internal. If a named node holds data from outside (an email, webhook or AI output), pass it as a query parameter instead.
 - **Date parameters:** an expression counts as a date value from its name, not its contents. If a "date" field could be set by an outside caller (for example a webhook body), validate it before the query (an IF node or a `DateTime` parse) or bind it with query parameters.
 - **Suppressions are visible:** anything the policy hides is listed under *Hidden by tuning policy* in the UI and in every export.
-- **Changing the policy:** set `TRUSTED_NETWORKS` to an empty string to report every internal HTTP call, or `TRUST_FORM_TRIGGERS=false` to check Form Triggers again.
+- **Changing the policy:** set `TRUSTED_NETWORKS` to an empty string to report every internal HTTP call, `TRUST_FORM_TRIGGERS=false` to check Form Triggers again, or `DISABLED_RULES=""` to turn the SQL injection rule back on.
 - **Code files:** the shared credentials-in-URL rule for code files (`rules/common/secrets.yml`) uses the same placeholder handling.
 
 ### n8n: notes on the secrets rules
@@ -321,5 +322,6 @@ To add a rule, add an entry to the right file under `rules/` with `metadata.titl
 | `ENABLE_DOCS` | false | Expose `/docs` (Swagger UI) |
 | `TRUSTED_NETWORKS` | `10.0.12.0/24` | Comma-separated CIDRs where plain HTTP is accepted (tuning policy). Empty = none |
 | `TRUST_FORM_TRIGGERS` | true | Don't report n8n Form Triggers as unauthenticated endpoints |
+| `DISABLED_RULES` | `n8n-sql-injection-via-expression` | Comma-separated rule ids to ignore completely (findings are listed as hidden). `""` = all rules on |
 
 The static UI assumes the default 2 MB limit (`MAX_BYTES` in `app/static/app.js`); keep it in sync if you change `MAX_PAYLOAD_BYTES`.

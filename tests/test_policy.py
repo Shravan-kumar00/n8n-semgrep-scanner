@@ -43,3 +43,10 @@ def test_form_triggers_only_when_enabled():
 def test_invalid_networks_rejected():
     with pytest.raises(ValueError):
         parse_networks("10.0.12.0/24, not-a-network")
+
+
+def test_disabled_rules():
+    sql = finding("n8n-sql-injection-via-expression", '"query": "SELECT 1"')
+    kept, hidden = TuningPolicy(disabled_rules=frozenset({"n8n-sql-injection-via-expression"})).apply([sql])
+    assert kept == [] and hidden[0].reason == "Rule turned off by policy (DISABLED_RULES)"
+    assert TuningPolicy().apply([sql]) == ([sql], [])

@@ -10,6 +10,8 @@ Configured through environment variables (see app/config.py):
   TRUSTED_NETWORKS     comma-separated CIDRs, e.g. "10.0.12.0/24,10.20.0.0/16"
   TRUST_FORM_TRIGGERS  "true" -> n8n Form Triggers are not treated as
                        unauthenticated endpoints
+  DISABLED_RULES       comma-separated rule ids to ignore completely, e.g.
+                       "n8n-sql-injection-via-expression"
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ def parse_networks(value: str) -> tuple[IPNetwork, ...]:
 class TuningPolicy:
     trusted_networks: tuple[IPNetwork, ...] = ()
     trust_form_triggers: bool = False
+    disabled_rules: frozenset[str] = frozenset()
 
     def apply(self, findings: list[Finding]) -> tuple[list[Finding], list[SuppressedFinding]]:
         kept: list[Finding] = []
@@ -54,6 +57,8 @@ class TuningPolicy:
         return kept, suppressed
 
     def _suppression_reason(self, finding: Finding) -> str | None:
+        if finding.rule_id in self.disabled_rules:
+            return "Rule turned off by policy (DISABLED_RULES)"
         if finding.rule_id in CLEARTEXT_RULES and self.trusted_networks:
             network = self.trusted_network_for(finding.snippet)
             if network is not None:

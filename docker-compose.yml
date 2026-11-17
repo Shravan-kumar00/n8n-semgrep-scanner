@@ -17,6 +17,7 @@ services:
       # Tuning policy (app/scanning/policy.py)
       TRUSTED_NETWORKS: "10.0.12.0/24"   # comma-separated CIDRs; plain HTTP here is accepted
       TRUST_FORM_TRIGGERS: "true"        # n8n Form Triggers are not reported as unauthenticated
+      DISABLED_RULES: "n8n-sql-injection-via-expression"  # rules to ignore; "" = all rules on
       # CORS_ORIGINS: "https://scanner.example.com"
     # --- hardening ---------------------------------------------------------
     read_only: true                 # immutable root filesystem

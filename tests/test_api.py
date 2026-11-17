@@ -40,7 +40,6 @@ def test_sample_triggers_every_rule(client):
         "n8n-command-injection-via-expression",
         "n8n-execute-command-node",
         "n8n-code-node-dangerous-api",
-        "n8n-sql-injection-via-expression",
         "n8n-webhook-without-authentication",
         "n8n-webhook-permissive-cors",
     }
@@ -48,6 +47,8 @@ def test_sample_triggers_every_rule(client):
     # Findings are sorted most severe first and mapped to their nodes.
     assert body["findings"][0]["risk"] == "critical"
     by_rule = {f["rule_id"]: f for f in body["findings"]}
+    # Switched off by DISABLED_RULES: listed as hidden, not reported.
+    assert [x["node_name"] for x in body["suppressed"] if x["rule_id"] == "n8n-sql-injection-via-expression"] == ["Lookup Customer"]
     assert by_rule["n8n-command-injection-via-expression"]["node_name"] == "Archive Orders"
     assert by_rule["n8n-tls-verification-disabled"]["node_name"] == "Push to ERP"
     # Snippets are masked; the exact value is in exposed_value.
@@ -173,11 +174,6 @@ def test_rule_tuning_decisions(client):
     body = scan(client, TUNING_CASES.read_text()).json()
     found = {(f["node_name"], f["rule_id"].removeprefix("n8n-"), f["risk"]) for f in body["findings"]}
     assert found == {
-        ("FLAG - Customer lookup (SQL)", "sql-injection-via-expression", "high"),
-        ("FLAG - Window plus user input (SQL)", "sql-injection-via-expression", "high"),
-        ("FLAG - Duplicate check with AI output", "sql-injection-via-expression", "high"),
-        ("FLAG - Named node mixed with request data", "sql-injection-via-expression", "high"),
-        ("FLAG - Named node plus webhook field", "sql-injection-via-expression", "high"),
         ("FLAG - Real token in URL", "credentials-in-url", "high"),
         ("FLAG - Public webhook", "webhook-without-authentication", "medium"),
         ("FLAG - Python exec", "code-node-dangerous-api", "high"),
@@ -189,9 +185,17 @@ def test_rule_tuning_decisions(client):
     assert not any(name.startswith(("IGNORE", "SUPPRESS", "Upload")) for name, _, _ in found)
     # Policy suppressions are reported, not silently dropped.
     suppressed = {(s["node_name"], s["rule_id"].removeprefix("n8n-")): s["reason"] for s in body["suppressed"]}
+    off = "Rule turned off by policy (DISABLED_RULES)"
     assert suppressed == {
         ("SUPPRESS - Conversion API in trusted subnet", "cleartext-http-internal"): "Plain HTTP inside trusted network 10.0.12.0/24",
         ("Upload 500 Subscribers", "webhook-without-authentication"): "Form trigger trusted by policy (TRUST_FORM_TRIGGERS)",
+        # The SQL rule is switched off by default; its rule-level tuning still
+        # decides what it would report (FLAG nodes only, never IGNORE nodes).
+        ("FLAG - Customer lookup (SQL)", "sql-injection-via-expression"): off,
+        ("FLAG - Window plus user input (SQL)", "sql-injection-via-expression"): off,
+        ("FLAG - Duplicate check with AI output", "sql-injection-via-expression"): off,
+        ("FLAG - Named node mixed with request data", "sql-injection-via-expression"): off,
+        ("FLAG - Named node plus webhook field", "sql-injection-via-expression"): off,
     }
     assert body["summary"]["total"] == len(body["findings"])
 
