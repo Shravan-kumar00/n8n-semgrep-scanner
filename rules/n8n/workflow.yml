@@ -321,7 +321,10 @@ rules:
           regex: ^"?(jsCode|functionCode|code|pythonCode)"?$
       - metavariable-regex:
           metavariable: $CODE
-          regex: (?s).*(child_process|\beval\s*\(|new\s+Function\s*\(|require\s*\(\W*(fs|child_process|net|vm|os|http|https|dgram|worker_threads)\b|process\.env|\bexecSync\s*\(|\bspawn(Sync)?\s*\(|\bsubprocess\b|os\.system|__import__|\bexec\s*\()
+          # exec( only as a standalone call (Python exec / destructured
+          # child_process exec), not a method: JavaScript's regex.exec(text)
+          # is ordinary text parsing.
+          regex: (?s).*(child_process|\beval\s*\(|new\s+Function\s*\(|require\s*\(\W*(fs|child_process|net|vm|os|http|https|dgram|worker_threads)\b|process\.env|\bexecSync\s*\(|\bspawn(Sync)?\s*\(|\bsubprocess\b|os\.system|__import__|(?<![.\w$])exec\s*\()
     metadata:
       title: Risky API in Code / Function node
       brief: "Custom code uses risky functions such as eval, child processes or environment variables."

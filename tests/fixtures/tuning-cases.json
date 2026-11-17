@@ -91,6 +91,18 @@
       "parameters": { "url": "http://api.partner-example.com/v1/orders" }
     },
     {
+      "name": "IGNORE - Regex Extraction1",
+      "type": "n8n-nodes-base.code",
+      "parameters": {
+        "jsCode": "const text = $input.first().json.body || '';\nconst re = /MSISDN[:\\s]+(\\d{8,15})/g;\nconst found = [];\nlet m;\nwhile ((m = re.exec(text)) !== null) { found.push(m[1]); }\nconst caseId = (text.match(/Case\\s*#(\\d+)/) || [])[1];\nreturn [{ json: { msisdns: found, caseId, clean: text.replace(/\\s+/g, ' ').trim() } }];"
+      }
+    },
+    {
+      "name": "FLAG - Python exec",
+      "type": "n8n-nodes-base.code",
+      "parameters": { "language": "python", "pythonCode": "exec(_input.first().json.code)\nreturn _input.all()" }
+    },
+    {
       "name": "IGNORE - Monday items",
       "type": "n8n-nodes-base.mondayCom",
       "parameters": { "resource": "boardItem", "operation": "getAll", "boardId": "1234567", "returnAll": true }

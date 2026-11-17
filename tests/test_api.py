@@ -177,6 +177,7 @@ def test_rule_tuning_decisions(client):
         ("FLAG - Window plus user input (SQL)", "sql-injection-via-expression", "high"),
         ("FLAG - Real token in URL", "credentials-in-url", "high"),
         ("FLAG - Public webhook", "webhook-without-authentication", "medium"),
+        ("FLAG - Python exec", "code-node-dangerous-api", "high"),
         ("LOW - Other private subnet", "cleartext-http-internal", "low"),
         ("LOW - Docker service name", "cleartext-http-internal", "low"),
         ("LOW - Internal DNS", "cleartext-http-internal", "low"),

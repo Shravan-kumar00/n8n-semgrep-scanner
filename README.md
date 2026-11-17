@@ -242,6 +242,7 @@ These adjustments were agreed after scanning real workflows. `tests/fixtures/tun
 | Clear-text HTTP | Internal traffic is low risk; trusted subnets are fully accepted | Private and internal hosts are moved to the low-risk `n8n-cleartext-http-internal` rule; public `http://` stays medium. Calls into `TRUSTED_NETWORKS` (default `10.0.12.0/24`) are suppressed by the policy |
 | Unauthenticated Form Triggers | Form Triggers (e.g. *Upload 500 Subscribers*) are secured by our internal submission flow | With `TRUST_FORM_TRIGGERS=true` (default), Form Triggers are not reported by `n8n-webhook-without-authentication`, and the workflow analysis does not treat them as anonymous entry points. Webhooks and public chat triggers are still checked |
 | Bulk reads (`returnAll`) | Intentional for processing incoming items and emails | Rule removed |
+| Risky API in Code node | Text-parsing code (e.g. *Regex Extraction1*) is safe | `n8n-code-node-dangerous-api` matches `exec(` only as a standalone call (Python `exec`), not JavaScript's `regex.exec(text)`. `eval`, `new Function`, `child_process`, `process.env` and similar are still flagged |
 
 Notes:
 - **Date parameters:** an expression counts as a date value from its name, not its contents. If a "date" field could be set by an outside caller (for example a webhook body), validate it before the query (an IF node or a `DateTime` parse) or bind it with query parameters.
